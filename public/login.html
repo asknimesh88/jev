@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Jev · Sign in</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+  :root { --bg:#0b0e14; --card:#131824; --line:#222a3a; --txt:#e6eaf2; --mut:#8a94a8; --acc:#7c9cff; --bad:#ff5d73; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background:radial-gradient(900px 500px at 50% -10%, #1b2440 0%, var(--bg) 60%); color:var(--txt); font:15px/1.5 Inter, system-ui, -apple-system, Segoe UI, sans-serif; }
+  form { width:min(360px, 90vw); background:var(--card); border:1px solid var(--line); border-radius:18px; padding:32px 28px; box-shadow:0 20px 60px #0008; }
+  .logo { display:flex; align-items:center; gap:10px; font-weight:700; font-size:22px; letter-spacing:.5px; margin-bottom:6px; }
+  .logo i { width:30px; height:30px; border-radius:9px; background:linear-gradient(135deg,#7c9cff,#4de1c1); display:block; }
+  p { margin:0 0 22px; color:var(--mut); font-size:13px; }
+  input { width:100%; padding:13px 14px; border-radius:11px; border:1px solid var(--line); background:#0d1220; color:var(--txt); font-size:15px; outline:none; }
+  input:focus { border-color:var(--acc); box-shadow:0 0 0 3px #7c9cff22; }
+  button { margin-top:14px; width:100%; padding:13px; border:0; border-radius:11px; background:linear-gradient(135deg,#7c9cff,#5a7bff); color:#fff; font-weight:600; font-size:15px; cursor:pointer; }
+  button:disabled { opacity:.6; }
+  .err { color:var(--bad); font-size:13px; min-height:18px; margin-top:12px; }
+</style>
+</head>
+<body>
+<form id="f">
+  <div class="logo"><i></i> Jev</div>
+  <p>Private trading intelligence. Enter your password.</p>
+  <input id="pw" type="password" placeholder="Password" autocomplete="current-password" autofocus required>
+  <button id="go">Unlock</button>
+  <div class="err" id="err"></div>
+</form>
+<script>
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const btn = document.getElementById("go"), err = document.getElementById("err");
+  btn.disabled = true; err.textContent = "";
+  try {
+    const r = await fetch("/api/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ password: document.getElementById("pw").value }) });
+    if (r.ok) return (location.href = "/");
+    err.textContent = "Wrong password.";
+  } catch { err.textContent = "Network error."; }
+  btn.disabled = false;
+});
+</script>
+</body>
+</html>

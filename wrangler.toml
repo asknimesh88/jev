@@ -1,0 +1,9 @@
+name = "jev"
+pages_build_output_dir = "public"
+compatibility_date = "2025-01-01"
+
+# Secrets (set in dashboard or `wrangler pages secret put`):
+#   JEV_PASSWORD        required – the login password
+#   SESSION_SECRET      optional – random string used to sign session cookies
+#   ANTHROPIC_API_KEY   optional – enables the AI-written briefing
+#   ANTHROPIC_MODEL     optional – defaults to claude-sonnet-5-5

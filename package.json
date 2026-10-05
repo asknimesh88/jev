@@ -1,0 +1,12 @@
+{
+  "name": "jev",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler pages dev public --compatibility-date=2025-01-01",
+    "deploy": "wrangler pages deploy public --project-name=jev",
+    "test": "node test/engine.test.mjs"
+  },
+  "devDependencies": { "wrangler": "^3.90.0" }
+}
