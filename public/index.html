@@ -10,28 +10,54 @@
 <script src="https://cdnjs.cloudflare.com/ajax/libs/lightweight-charts/4.1.3/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
-<header class="top">
-  <div class="logo"><i></i> Jev</div>
-  <form id="form" class="search" autocomplete="off">
-    <svg viewBox="0 0 24 24" width="18" height="18"><path d="M21 21l-4.3-4.3M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-    <input id="sym" placeholder="Enter a pair, e.g. BTCUSDT — press Enter" spellcheck="false" autocapitalize="characters" autofocus>
-    <kbd>↵</kbd>
-  </form>
-  <label class="auto" title="Re-analyze every 60s"><input type="checkbox" id="auto"><span>Auto-refresh</span></label>
-  <a class="out" href="/api/login?logout=1">Lock</a>
-</header>
+<div class="shell">
+  <aside class="side">
+    <div class="brand"><i></i><div><b>JEV</b><small>PERPS INTELLIGENCE</small></div></div>
+    <nav>
+      <button class="nav on" data-view="dash"><svg viewBox="0 0 24 24"><path d="M4 19V5m0 14h16M8 15l3-4 3 2 4-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>Dashboard</button>
+      <button class="nav" data-view="scan"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" fill="none" stroke="currentColor" stroke-width="2"/><path d="M20 20l-4-4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Scanner</button>
+      <button class="nav" data-view="set"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6l2.1 2.1m0-12.8l-2.1 2.1m-8.6 8.6l-2.1 2.1" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>Settings</button>
+    </nav>
+    <div class="sidehead">WATCHLIST <small>15m · 1h</small></div>
+    <div id="watch" class="watch"></div>
+    <div class="sidefoot">
+      <div class="status"><span id="jevdot" class="sdot"></span><span id="jevtxt">Engine idle</span></div>
+      <a class="lock" href="/api/login?logout=1">⎋ Lock</a>
+    </div>
+  </aside>
 
-<main id="app">
-  <section class="empty" id="empty">
-    <h1>What are we trading?</h1>
-    <p>Type a perp pair and hit Enter. Jev reads the chart, technicals, sentiment and fundamentals, then tells you whether there is a trade — or whether the moment has passed.</p>
-    <div class="chips" id="chips"></div>
+  <section class="center">
+    <header class="topbar">
+      <form id="form" class="search" autocomplete="off">
+        <span class="mkt">PERP</span>
+        <input id="sym" placeholder="Pair, e.g. BTCUSDT — press Enter" spellcheck="false" autocapitalize="characters" autofocus>
+        <kbd>↵</kbd>
+      </form>
+      <div class="seg" id="tfseg"><button data-tf="15m" class="on">15m</button><button data-tf="1h">1H</button></div>
+      <button id="run" class="runbtn" type="button">Run Analysis</button>
+      <label class="auto" title="Re-analyze automatically"><input type="checkbox" id="auto"><span>Auto</span></label>
+      <span class="upd" id="upd"></span>
+    </header>
+
+    <div id="view-dash" class="view">
+      <section class="empty" id="empty">
+        <div class="glow"></div>
+        <h1>What are we trading?</h1>
+        <p>Type a perp pair and hit Enter. Jev reads the chart, technicals, sentiment and fundamentals, then tells you whether there is a trade — or whether the moment has passed.</p>
+        <div class="chips" id="chips"></div>
+      </section>
+      <section id="loading" class="loading" hidden><div class="spin"></div><div id="loadtxt">Analyzing…</div></section>
+      <section id="error" class="errbox" hidden></section>
+      <div id="center" hidden></div>
+    </div>
+
+    <div id="view-scan" class="view" hidden></div>
+    <div id="view-set" class="view" hidden></div>
+    <footer>Jev is a decision-support tool, not financial advice. Signals are probabilistic; always size risk to the stop.</footer>
   </section>
-  <section id="loading" class="loading" hidden><div class="spin"></div><div id="loadtxt">Analyzing…</div></section>
-  <section id="error" class="errbox" hidden></section>
-  <div id="result" hidden></div>
-</main>
-<footer>Jev is a decision-support tool, not financial advice. Signals are probabilistic; always size risk to the stop.</footer>
+
+  <aside class="right" id="right"></aside>
+</div>
 <script src="/app.js"></script>
 </body>
 </html>
