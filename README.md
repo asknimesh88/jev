@@ -1,4 +1,4 @@
-# Jev — private trading dashboard
+# Jev — private perps trading dashboard
 
 Type a pair (e.g. `BTCUSDT`), press Enter. Jev pulls live candles, computes technicals, reads sentiment
 (Fear & Greed, funding, long/short) and fundamentals (CoinGecko), then returns a **15m** and a **1h** plan:
@@ -32,3 +32,22 @@ Entry = EMA20 pullback; stop = beyond nearest swing ± ATR (1–2.5 ATR); TP1/TP
 
 Data: Binance (data-api.binance.vision → api.binance.com) with Bybit fallback; spot crypto pairs only for now.
 `npm test` runs engine sanity tests.
+
+## v2: Jev decision layer, perps, Telegram
+
+**Jev** (TypeSafe System One) is called through the Composio API. For each timeframe the rules engine proposes a plan, then Jev
+answers three questions: direction (long/short/neutral), *P(TP1 hits before stop)*, and *how much of the opportunity is left*.
+Jev's probability becomes the displayed confidence, and it can veto: TP-first < 50% → NO TRADE, Jev strongly opposes → NO TRADE,
+opportunity left < 30% → CHANCE GONE (tune in `functions/_lib/jev.js → GATES`). If Jev is unreachable, the app falls back to rules and says so.
+Add to Pages secrets: `COMPOSIO_API_KEY`, `JEV_CONNECTED_ACCOUNT_ID` (the Jev account id in Composio), optional `COMPOSIO_USER_ID`, `JEV_MODEL`.
+
+**Perps:** data comes from perpetual-futures markets (Binance USD-M → Bybit linear → OKX swap). The dashboard has a sizing calculator:
+risk-based position size, margin, estimated liquidation, and a warning if liquidation would hit before your stop.
+
+**Telegram** (create a bot with @BotFather, get your chat id from @userinfobot):
+1. Pages secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET` (random string).
+2. Register the webhook once:
+   `curl "https://api.telegram.org/bot<TOKEN>/setWebhook" -d url=https://<your-site>/api/telegram -d secret_token=<WEBHOOK_SECRET>`
+3. Message the bot `BTCUSDT` (or just `sol`) → it replies with the 15m + 1h plan. The dashboard also has a **Send to Telegram** button.
+4. Push alerts: deploy the watcher — `cd worker`, create KV (`npx wrangler kv namespace create STATE`), paste the id in `worker/wrangler.toml`,
+   set `WATCHLIST`, add the secrets listed there, `npx wrangler deploy`. Every 5 min it alerts when a setup becomes ENTER NOW / WAIT, and when a pending one dies.

@@ -2,7 +2,7 @@
 // Session = signed, expiring, HttpOnly cookie. Set JEV_PASSWORD (and optionally SESSION_SECRET) in Cloudflare.
 import { verifySession } from "./_lib/session.js";
 
-const OPEN = new Set(["/login", "/login.html", "/api/login", "/favicon.svg"]);
+const OPEN = new Set(["/login", "/login.html", "/api/login", "/favicon.svg", "/api/telegram"]); // /api/telegram self-authenticates via secret token
 
 export async function onRequest({ request, env, next }) {
   if (!env.JEV_PASSWORD) {

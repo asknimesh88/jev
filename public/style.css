@@ -94,3 +94,14 @@ footer { text-align:center; color:#5d667a; font-size:12px; padding:30px 20px 40p
   .levels { grid-template-columns:repeat(2,1fr); }
   .empty h1 { font-size:28px; } main { padding:16px; }
 }
+
+.jevline { margin-top:7px; font-size:12px; color:var(--mut); }
+.calc { margin-top:16px; }
+.calcin { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; margin-bottom:14px; }
+.calcin label { display:grid; gap:5px; font-size:12px; color:var(--mut); }
+.calcin input { background:#0d1220; border:1px solid var(--line); color:var(--txt); border-radius:9px; padding:9px 11px; font-size:14px; outline:0; }
+.calcin input:focus { border-color:var(--acc); }
+.calcout { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+.cc { background:var(--card2); border:1px solid var(--line); border-radius:12px; padding:14px; }
+.cc.dim { opacity:.4; }
+@media (max-width:900px) { .calcout,.calcin { grid-template-columns:1fr; } }

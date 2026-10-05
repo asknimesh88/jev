@@ -19,23 +19,34 @@ const TF = {
 
 const candle = (t, o, h, l, c, v) => ({ t: Math.floor(+t / 1000), o: +o, h: +h, l: +l, c: +c, v: +v });
 
-// Returns { candles (oldest→newest, last one is the live/forming candle), source }
+const okxInst = (symbol) => {
+  const q = ["USDT", "USDC"].find((x) => symbol.endsWith(x));
+  return q ? `${symbol.slice(0, -q.length)}-${q}-SWAP` : symbol;
+};
+
+// Perpetual-futures candles. Returns { candles (oldest→newest, last = live/forming candle), source }.
+// Tries Binance USD-M → Bybit linear → OKX swap, since some exchanges geo-block some Cloudflare regions.
 export async function getKlines(symbol, tf, limit = 300) {
   const errs = [];
-  for (const host of ["https://data-api.binance.vision", "https://api.binance.com"]) {
-    try {
-      const d = await getJSON(`${host}/api/v3/klines?symbol=${symbol}&interval=${TF[tf].binance}&limit=${limit}`);
-      return { source: "Binance", candles: d.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])) };
-    } catch (e) { errs.push(e.message); }
-  }
   try {
-    const d = await getJSON(`https://api.bybit.com/v5/market/kline?category=spot&symbol=${symbol}&interval=${TF[tf].bybit}&limit=${limit}`);
+    const d = await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${TF[tf].binance}&limit=${limit}`);
+    return { source: "Binance Perp", candles: d.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])) };
+  } catch (e) { errs.push(e.message); }
+  try {
+    const d = await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${TF[tf].bybit}&limit=${limit}`);
     if (d.retCode === 0 && d.result.list.length) {
-      return { source: "Bybit", candles: d.result.list.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])).reverse() };
+      return { source: "Bybit Perp", candles: d.result.list.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])).reverse() };
     }
     errs.push("bybit: " + d.retMsg);
   } catch (e) { errs.push(e.message); }
-  throw new Error(`No market data for ${symbol} (${errs.join("; ")})`);
+  try {
+    const d = await getJSON(`https://www.okx.com/api/v5/market/candles?instId=${okxInst(symbol)}&bar=${TF[tf].okx}&limit=${Math.min(limit, 300)}`);
+    if (d.code === "0" && d.data.length) {
+      return { source: "OKX Perp", candles: d.data.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])).reverse() };
+    }
+    errs.push("okx: " + d.msg);
+  } catch (e) { errs.push(e.message); }
+  throw new Error(`No perp market data for ${symbol} (${errs.join("; ")})`);
 }
 
 // Derivatives sentiment: funding rate, open interest, long/short ratio. All optional.
@@ -78,8 +89,9 @@ export async function getFearGreed() {
 
 const QUOTES = ["USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USD", "EUR", "BTC", "ETH", "BNB"];
 export const baseOf = (symbol) => {
-  for (const q of QUOTES) if (symbol.endsWith(q) && symbol.length > q.length) return symbol.slice(0, -q.length);
-  return symbol;
+  let b = symbol;
+  for (const q of QUOTES) if (symbol.endsWith(q) && symbol.length > q.length) { b = symbol.slice(0, -q.length); break; }
+  return b.replace(/^(1000000|1000|1M)(?=[A-Z])/, ""); // 1000PEPE → PEPE
 };
 
 // Fundamentals from CoinGecko (free tier, cached at the edge).

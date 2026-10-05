@@ -1,0 +1,13 @@
+import { applyJev } from "../functions/_lib/jev.js";
+let fail = 0; const ok = (c, m) => { if (!c) { fail++; console.error("FAIL", m); } else console.log("ok  ", m); };
+const mk = () => ({ tf: "15m", direction: "LONG", verdict: "ENTER_NOW", note: "x", confidence: 70, score: .4, price: 100, indicators: {}, components: {}, reasons: [], plan: { entry: 100, entryType: "MARKET", stopLoss: 98, tp1: 103, tp2: 105, rr1: 1.5 } });
+const mock = (a) => (globalThis.fetch = async () => ({ ok: true, json: async () => ({ data: { model: "jev-x", answers: a } }) }));
+const env = { COMPOSIO_API_KEY: "k" };
+const A = (dir, p, tp, cl) => ({ direction: { choice: dir, confidence: .9, probabilities: { [dir]: p } }, tp_before_sl: { noul: tp }, chance_left: { noul: cl } });
+let s = mk(); mock(A("long", .9, .64, .8)); await applyJev(env, "BTCUSDT", s, {});
+ok(s.verdict === "ENTER_NOW" && s.confidence === 64 && s.jev.used, "keeps good setup, confidence = Jev prob");
+s = mk(); mock(A("long", .9, .4, .8)); await applyJev(env, "BTCUSDT", s, {}); ok(s.verdict === "NO_TRADE", "low TP-first → NO_TRADE");
+s = mk(); mock(A("short", .85, .6, .8)); await applyJev(env, "BTCUSDT", s, {}); ok(s.verdict === "NO_TRADE", "Jev opposes → NO_TRADE");
+s = mk(); mock(A("long", .9, .6, .1)); await applyJev(env, "BTCUSDT", s, {}); ok(s.verdict === "MISSED", "low chance-left → MISSED");
+s = mk(); globalThis.fetch = async () => ({ ok: false, status: 500 }); await applyJev(env, "BTCUSDT", s, {}); ok(s.verdict === "ENTER_NOW" && !s.jev.used, "Jev failure falls back to rules");
+process.exit(fail ? 1 : 0);

@@ -68,7 +68,8 @@ function sigCard(s) {
     <div class="dir ${dirCls}">${dirTxt}</div>
     <p class="note">${esc(s.note)}</p>
     ${s.verdict === "MISSED" || s.verdict === "NO_TRADE" ? `<div class="dead-banner">${s.verdict === "MISSED" ? "The trade chance is gone. Do not chase — wait for a fresh setup." : "No trade on this timeframe."} Levels below are for reference only.</div>` : ""}
-    <div class="conf"><div class="lbl"><span>Confluence confidence</span><b>${s.confidence}%</b></div><div class="bar"><div style="width:${s.confidence}%"></div></div></div>
+    <div class="conf"><div class="lbl"><span>${s.jev?.used ? "Jev · TP1 hits before stop" : "Confluence strength (Jev offline)"}</span><b>${s.confidence}%</b></div><div class="bar"><div style="width:${s.confidence}%"></div></div>
+      ${s.jev?.used ? `<div class="jevline">Jev reads <b>${esc(s.jev.direction.toUpperCase())}</b> (${Math.round(s.jev.dirConfidence * 100)}%) · opportunity left ${Math.round(s.jev.chanceLeft * 100)}%</div>` : ""}</div>
     <div class="levels">
       ${lv("e", p.entryType === "LIMIT" ? "Entry (limit)" : "Entry", p.entry, p.entryType === "LIMIT" ? "wait for fill" : "market / now")}
       ${lv("sl", "Stop loss", p.stopLoss, `-${p.riskPct}%`, "sl")}
@@ -92,12 +93,13 @@ function render(d) {
   const f = d.fundamentals, dv = d.derivatives, fg = d.fearGreed;
   $("result").innerHTML = `
     <div class="head">
-      <div><h2>${esc(d.symbol)}</h2><span class="mut">via ${esc(d.source)}</span></div>
+      <div><h2>${esc(d.symbol)} <small class="tag" style="font-size:12px">PERP</small></h2><span class="mut">via ${esc(d.source)} · ${d.jevActive ? "Jev active" : "Jev offline (rules only)"}</span></div>
       <div class="px">${fmt(d.price)} <small class="${cls(d.change24h)}" style="font-size:16px">${pct(d.change24h, 2)} 24h</small></div>
-      <div class="meta">Analyzed ${new Date(d.generatedAt).toLocaleTimeString()}<br>Levels based on closed candles</div>
+      <div class="meta"><button class="tab" id="tg" type="button">Send to Telegram</button><br>Analyzed ${new Date(d.generatedAt).toLocaleTimeString()}<br>Levels based on closed candles</div>
     </div>
     <div class="grid2">${sigCard(a)}${sigCard(b)}</div>
 
+    <div class="card calc" id="calc">${calcHTML()}</div>
     <div class="card chartcard">
       <div class="tabs">${d.signals.map((s) => `<button class="tab ${s.tf === activeTf ? "on" : ""}" data-tf="${s.tf}">${s.tf}</button>`).join("")}</div>
       <div id="chart"></div>
@@ -131,7 +133,46 @@ function render(d) {
 
   document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => { activeTf = t.dataset.tf; render(current); }));
   document.querySelectorAll(".lv").forEach((el) => (el.onclick = () => { navigator.clipboard?.writeText(el.dataset.copy); toast("Copied " + el.dataset.copy); }));
+  $("tg").onclick = async () => {
+    const r = await fetch("/api/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: d.symbol }) });
+    toast(r.ok ? "Sent to Telegram" : (await r.json()).error || "Telegram failed");
+  };
+  document.querySelectorAll("#calc input").forEach((i) => (i.oninput = () => { saveCalc(); updateCalc(); }));
+  updateCalc();
   drawChart(T);
+}
+
+// ---------- Perp position calculator (risk-based sizing + liquidation check)
+const MMR = 0.005; // approx. maintenance margin rate
+const CK = "jev.calc";
+const loadCalc = () => { try { return { bal: 1000, risk: 1, lev: 10, ...JSON.parse(localStorage.getItem(CK) || "{}") }; } catch { return { bal: 1000, risk: 1, lev: 10 }; } };
+const saveCalc = () => { try { localStorage.setItem(CK, JSON.stringify({ bal: +$("c-bal").value, risk: +$("c-risk").value, lev: +$("c-lev").value })); } catch {} };
+function calcHTML() {
+  const c = loadCalc();
+  return `<h3>Perp position sizing</h3>
+  <div class="calcin">
+    <label>Account (USDT)<input id="c-bal" type="number" min="1" value="${c.bal}"></label>
+    <label>Risk per trade (%)<input id="c-risk" type="number" min="0.1" step="0.1" value="${c.risk}"></label>
+    <label>Leverage (x)<input id="c-lev" type="number" min="1" max="125" value="${c.lev}"></label>
+  </div><div class="calcout" id="c-out"></div>`;
+}
+function updateCalc() {
+  if (!current) return;
+  const bal = +$("c-bal").value, risk = +$("c-risk").value / 100, lev = +$("c-lev").value;
+  $("c-out").innerHTML = current.signals.map((s) => {
+    const p = s.plan, dist = Math.abs(p.entry - p.stopLoss), long = s.direction === "LONG";
+    const qty = (bal * risk) / dist, notional = qty * p.entry, margin = notional / lev;
+    const liq = long ? p.entry * (1 - 1 / lev + MMR) : p.entry * (1 + 1 / lev - MMR);
+    const safe = long ? liq < p.stopLoss : liq > p.stopLoss;
+    const maxLev = Math.max(1, Math.floor(1 / ((dist / p.entry) * 1.3 + MMR)));
+    const dead = s.verdict === "MISSED" || s.verdict === "NO_TRADE";
+    return `<div class="cc ${dead ? "dim" : ""}"><b>${s.tf} ${dead ? "(no trade)" : s.direction}</b>
+      <div class="kv"><span>Risk</span><span>$${(bal * risk).toFixed(2)}</span><span>Size</span><span>${qty.toPrecision(4)} (${big(notional)} USDT)</span>
+      <span>Margin used</span><span class="${margin > bal ? "dn" : ""}">${margin.toFixed(2)} USDT</span>
+      <span>Est. liquidation</span><span class="${safe ? "" : "dn"}">${fmt(+liq.toPrecision(6))}</span>
+      <span>Max leverage (liq beyond stop)</span><span>${maxLev}x</span></div>
+      ${safe ? "" : `<div class="dn" style="font-size:12px;margin-top:6px">⚠ Liquidation is hit before your stop — lower leverage to ≤ ${maxLev}x.</div>`}</div>`;
+  }).join("");
 }
 
 function drawChart(s) {
