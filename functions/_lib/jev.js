@@ -1,7 +1,7 @@
-// Jev (TypeSafe System One) decision layer, called through the Composio API.
+// Jev (TypeSafe System One) decision layer. Direct API via JEV_API_KEY; Composio as optional fallback.
 // Jev returns calibrated probabilities for each question; they decide whether the rules-engine plan is worth taking.
 //
-// Env: COMPOSIO_API_KEY (required to enable), JEV_CONNECTED_ACCOUNT_ID, COMPOSIO_USER_ID (optional), JEV_MODEL (default jev-latest)
+// Env: JEV_API_KEY (preferred) | COMPOSIO_API_KEY + JEV_CONNECTED_ACCOUNT_ID (fallback); optional JEV_MODEL (default jev-latest), JEV_API_URL
 
 const EXEC = "https://backend.composio.dev/api/v3/tools/execute/JEV_EVALUATE_STATE";
 
@@ -47,30 +47,38 @@ const stateOf = (symbol, s, ctx) => ({
   fundamentals: ctx.fundamentals ? { rank: ctx.fundamentals.rank, change7d: ctx.fundamentals.change7d, change30d: ctx.fundamentals.change30d } : null,
 });
 
+const DIRECT = "https://api.typesafe.ai/v1/systemone";
+
+// Direct TypeSafe API (preferred): POST /v1/systemone, Bearer key. Falls back to Composio if only that is configured.
 async function evaluate(env, symbol, s, ctx) {
-  const r = await fetch(EXEC, {
+  const model = env.JEV_MODEL || "jev-latest";
+  const state = stateOf(symbol, s, ctx), qs = questions(s);
+  const direct = !!env.JEV_API_KEY;
+  const r = await fetch(direct ? env.JEV_API_URL || DIRECT : EXEC, {
     method: "POST",
     signal: AbortSignal.timeout(25000),
-    headers: { "content-type": "application/json", "x-api-key": env.COMPOSIO_API_KEY },
-    body: JSON.stringify({
-      connected_account_id: env.JEV_CONNECTED_ACCOUNT_ID || undefined,
-      user_id: env.COMPOSIO_USER_ID || undefined,
-      arguments: { model: env.JEV_MODEL || "jev-latest", state: stateOf(symbol, s, ctx), questions: questions(s) },
-    }),
+    headers: direct
+      ? { "content-type": "application/json", authorization: `Bearer ${env.JEV_API_KEY}` }
+      : { "content-type": "application/json", "x-api-key": env.COMPOSIO_API_KEY },
+    body: JSON.stringify(
+      direct
+        ? { model, state: JSON.stringify(state), questions: qs }
+        : { connected_account_id: env.JEV_CONNECTED_ACCOUNT_ID || undefined, user_id: env.COMPOSIO_USER_ID || undefined, arguments: { model, state, questions: qs } }
+    ),
   });
-  if (!r.ok) throw new Error(`composio ${r.status}`);
+  if (!r.ok) throw new Error(`${direct ? "jev" : "composio"} ${r.status}`);
   const d = await r.json();
-  const a = d.data?.answers ?? d.data?.data?.answers ?? d.data?.response_data?.answers;
+  const a = d.answers ?? d.data?.answers ?? d.data?.data?.answers ?? d.data?.response_data?.answers;
   if (!a?.tp_before_sl) throw new Error("unexpected jev response");
   return {
     direction: a.direction.choice, dirConfidence: a.direction.confidence, dirProbs: a.direction.probabilities,
-    tpFirst: a.tp_before_sl.noul, chanceLeft: a.chance_left.noul, model: d.data?.model,
+    tpFirst: a.tp_before_sl.noul, chanceLeft: a.chance_left.noul, model: d.model ?? d.data?.model,
   };
 }
 
 // Mutates `s` in place: attaches s.jev and applies Jev's gates to the verdict.
 export async function applyJev(env, symbol, s, ctx) {
-  if (!env.COMPOSIO_API_KEY) { s.jev = { used: false, reason: "COMPOSIO_API_KEY not set" }; return; }
+  if (!env.JEV_API_KEY && !env.COMPOSIO_API_KEY) { s.jev = { used: false, reason: "JEV_API_KEY not set" }; return; }
   try {
     const j = await evaluate(env, symbol, s, ctx);
     s.jev = { used: true, ...j };

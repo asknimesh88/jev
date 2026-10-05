@@ -14,4 +14,4 @@ binding = "STATE"
 id = "REPLACE_WITH_KV_ID"
 
 # 2) Secrets (npx wrangler secret put <NAME> --config worker/wrangler.toml):
-#    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, COMPOSIO_API_KEY, JEV_CONNECTED_ACCOUNT_ID (optional: ANTHROPIC_API_KEY)
+#    TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, JEV_API_KEY (optional: ANTHROPIC_API_KEY)

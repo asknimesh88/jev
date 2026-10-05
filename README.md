@@ -39,7 +39,7 @@ Data: Binance (data-api.binance.vision → api.binance.com) with Bybit fallback;
 answers three questions: direction (long/short/neutral), *P(TP1 hits before stop)*, and *how much of the opportunity is left*.
 Jev's probability becomes the displayed confidence, and it can veto: TP-first < 50% → NO TRADE, Jev strongly opposes → NO TRADE,
 opportunity left < 30% → CHANCE GONE (tune in `functions/_lib/jev.js → GATES`). If Jev is unreachable, the app falls back to rules and says so.
-Add to Pages secrets: `COMPOSIO_API_KEY`, `JEV_CONNECTED_ACCOUNT_ID` (the Jev account id in Composio), optional `COMPOSIO_USER_ID`, `JEV_MODEL`.
+Set the Pages secret **`JEV_API_KEY`** (direct `POST https://api.typesafe.ai/v1/systemone`, Bearer auth). Optional: `JEV_MODEL` (default `jev-latest`). Composio is only a fallback if `JEV_API_KEY` is absent (`COMPOSIO_API_KEY` + `JEV_CONNECTED_ACCOUNT_ID`). Never commit the key.
 
 **Perps:** data comes from perpetual-futures markets (Bybit linear → Binance USD-M → OKX swap). The dashboard has a sizing calculator:
 risk-based position size, margin, estimated liquidation, and a warning if liquidation would hit before your stop.
