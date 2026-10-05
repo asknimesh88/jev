@@ -25,19 +25,19 @@ const okxInst = (symbol) => {
 };
 
 // Perpetual-futures candles. Returns { candles (oldest→newest, last = live/forming candle), source }.
-// Tries Binance USD-M → Bybit linear → OKX swap, since some exchanges geo-block some Cloudflare regions.
+// Tries Bybit linear → Binance USD-M → OKX swap, since some exchanges geo-block some Cloudflare regions.
 export async function getKlines(symbol, tf, limit = 300) {
   const errs = [];
-  try {
-    const d = await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${TF[tf].binance}&limit=${limit}`);
-    return { source: "Binance Perp", candles: d.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])) };
-  } catch (e) { errs.push(e.message); }
   try {
     const d = await getJSON(`https://api.bybit.com/v5/market/kline?category=linear&symbol=${symbol}&interval=${TF[tf].bybit}&limit=${limit}`);
     if (d.retCode === 0 && d.result.list.length) {
       return { source: "Bybit Perp", candles: d.result.list.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])).reverse() };
     }
     errs.push("bybit: " + d.retMsg);
+  } catch (e) { errs.push(e.message); }
+  try {
+    const d = await getJSON(`https://fapi.binance.com/fapi/v1/klines?symbol=${symbol}&interval=${TF[tf].binance}&limit=${limit}`);
+    return { source: "Binance Perp", candles: d.map((k) => candle(k[0], k[1], k[2], k[3], k[4], k[5])) };
   } catch (e) { errs.push(e.message); }
   try {
     const d = await getJSON(`https://www.okx.com/api/v5/market/candles?instId=${okxInst(symbol)}&bar=${TF[tf].okx}&limit=${Math.min(limit, 300)}`);
@@ -52,30 +52,27 @@ export async function getKlines(symbol, tf, limit = 300) {
 // Derivatives sentiment: funding rate, open interest, long/short ratio. All optional.
 export async function getDerivatives(symbol) {
   const out = { available: false };
-  const tryBinance = async () => {
-    const [prem, oi, ls] = await Promise.allSettled([
+  // Bybit first (primary venue)
+  const [tk, ratio] = await Promise.allSettled([
+    getJSON(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`, 5000),
+    getJSON(`https://api.bybit.com/v5/market/account-ratio?category=linear&symbol=${symbol}&period=1h&limit=1`, 5000),
+  ]);
+  const t = tk.status === "fulfilled" ? tk.value.result?.list?.[0] : null;
+  if (t) {
+    out.funding = +t.fundingRate; out.openInterestValue = +t.openInterestValue; out.markPrice = +t.markPrice;
+    out.change24h = +t.price24hPcnt * 100; out.available = true; out.source = "Bybit";
+  }
+  const r = ratio.status === "fulfilled" ? ratio.value.result?.list?.[0] : null;
+  if (r && +r.sellRatio) out.longShort = +r.buyRatio / +r.sellRatio;
+  // Binance fills any gaps
+  if (out.funding == null || out.longShort == null) {
+    const [prem, ls] = await Promise.allSettled([
       getJSON(`https://fapi.binance.com/fapi/v1/premiumIndex?symbol=${symbol}`, 5000),
-      getJSON(`https://fapi.binance.com/fapi/v1/openInterest?symbol=${symbol}`, 5000),
       getJSON(`https://fapi.binance.com/futures/data/globalLongShortAccountRatio?symbol=${symbol}&period=1h&limit=1`, 5000),
     ]);
-    if (prem.status === "fulfilled") { out.funding = +prem.value.lastFundingRate; out.markPrice = +prem.value.markPrice; out.available = true; }
-    if (oi.status === "fulfilled") out.openInterest = +oi.value.openInterest;
-    if (ls.status === "fulfilled" && ls.value[0]) out.longShort = +ls.value[0].longShortRatio;
-  };
-  await tryBinance().catch(() => {});
-  if (out.funding == null) {
-    try {
-      const d = await getJSON(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${symbol}`, 5000);
-      const t = d.result?.list?.[0];
-      if (t) {
-        out.funding = +t.fundingRate;
-        out.openInterestValue = +t.openInterestValue;
-        out.change24h = +t.price24hPcnt * 100;
-        out.available = true;
-        out.source = "Bybit";
-      }
-    } catch {}
-  } else out.source = "Binance Futures";
+    if (out.funding == null && prem.status === "fulfilled") { out.funding = +prem.value.lastFundingRate; out.available = true; out.source = "Binance Futures"; }
+    if (out.longShort == null && ls.status === "fulfilled" && ls.value[0]) out.longShort = +ls.value[0].longShortRatio;
+  }
   return out;
 }
 

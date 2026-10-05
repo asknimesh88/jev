@@ -41,7 +41,7 @@ Jev's probability becomes the displayed confidence, and it can veto: TP-first < 
 opportunity left < 30% → CHANCE GONE (tune in `functions/_lib/jev.js → GATES`). If Jev is unreachable, the app falls back to rules and says so.
 Add to Pages secrets: `COMPOSIO_API_KEY`, `JEV_CONNECTED_ACCOUNT_ID` (the Jev account id in Composio), optional `COMPOSIO_USER_ID`, `JEV_MODEL`.
 
-**Perps:** data comes from perpetual-futures markets (Binance USD-M → Bybit linear → OKX swap). The dashboard has a sizing calculator:
+**Perps:** data comes from perpetual-futures markets (Bybit linear → Binance USD-M → OKX swap). The dashboard has a sizing calculator:
 risk-based position size, margin, estimated liquidation, and a warning if liquidation would hit before your stop.
 
 **Telegram** (create a bot with @BotFather, get your chat id from @userinfobot):

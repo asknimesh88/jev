@@ -6,7 +6,7 @@ compatibility_date = "2025-01-01"
 crons = ["*/5 * * * *"]
 
 [vars]
-WATCHLIST = "BTCUSDT,ETHUSDT,SOLUSDT"
+WATCHLIST = "BTCUSDT,SOLUSDT,ETHUSDT,KASUSDT,ALGOUSDT,HBARUSDT,QNTUSDT,ONDOUSDT,XLMUSDT,XDCUSDT,XRPUSDT"
 
 # 1) npx wrangler kv namespace create STATE   → paste the id below
 [[kv_namespaces]]

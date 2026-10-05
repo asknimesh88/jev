@@ -14,7 +14,7 @@ const VERDICT = {
 
 let chart, current, activeTf = "15m", timer;
 
-["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "DOGEUSDT"].forEach((s) => {
+["BTCUSDT", "SOLUSDT", "ETHUSDT", "KASUSDT", "ALGOUSDT", "HBARUSDT", "QNTUSDT", "ONDOUSDT", "XLMUSDT", "XDCUSDT", "XRPUSDT"].forEach((s) => {
   const b = document.createElement("button");
   b.className = "chip"; b.textContent = s; b.type = "button";
   b.onclick = () => { $("sym").value = s; run(); };
