@@ -50,4 +50,4 @@ risk-based position size, margin, estimated liquidation, and a warning if liquid
    `curl "https://api.telegram.org/bot<TOKEN>/setWebhook" -d url=https://<your-site>/api/telegram -d secret_token=<WEBHOOK_SECRET>`
 3. Message the bot `BTCUSDT` (or just `sol`) → it replies with the 15m + 1h plan. The dashboard also has a **Send to Telegram** button.
 4. Push alerts: deploy the watcher — `cd worker`, create KV (`npx wrangler kv namespace create STATE`), paste the id in `worker/wrangler.toml`,
-   set `WATCHLIST`, add the secrets listed there, `npx wrangler deploy`. Every 5 min it alerts when a setup becomes ENTER NOW / WAIT, and when a pending one dies.
+   set `WATCHLIST`, add the secrets listed there, `npx wrangler deploy`. Every 3 min it scans a rotating batch of 3 coins (whole list &#126; every 12 min) and alerts when a setup becomes ENTER NOW / WAIT, and when a pending one dies.

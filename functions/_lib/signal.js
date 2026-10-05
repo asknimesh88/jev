@@ -25,7 +25,7 @@ export function snapshot(candles) {
     bbUp: bb.up[i], bbLo: bb.lo[i], bbMid: bb.mid[i],
     adx: ad.adx[i], pdi: ad.pdi[i], mdi: ad.mdi[i],
     volRatio: vs[i] ? v[i] / vs[i] : 1,
-    series: { e20, e50, e200 },
+    series: { e20, e50, e200, rsi: r, bbUp: bb.up, bbLo: bb.lo, mh: m.hist },
   };
   const ref200 = s.ema200 ?? s.ema50;
   s.stack = clamp(((price > s.ema20) + (s.ema20 > s.ema50) + (s.ema50 > ref200) - 1.5) / 1.5);
@@ -161,15 +161,28 @@ export function analyzeTimeframe({ tf, candles, htf, derivatives, fearGreed, fun
       ema20: round(s.ema20), ema50: round(s.ema50), ema200: round(s.ema200), rsi: +s.rsi.toFixed(1),
       macdHist: round(s.macdHist), atr: round(A), atrPct: +((A / price) * 100).toFixed(2), adx: +(s.adx ?? 0).toFixed(1),
       volRatio: +s.volRatio.toFixed(2), support: round(support), resistance: round(resistance),
+      bbUp: round(s.bbUp), bbLo: round(s.bbLo), bbPos: +(((price - s.bbLo) / (s.bbUp - s.bbLo || 1))).toFixed(2),
+      pdi: +(s.pdi ?? 0).toFixed(1), mdi: +(s.mdi ?? 0).toFixed(1), macdLine: round(s.macdLine), stack: +s.stack.toFixed(2),
     },
+    levels: [
+      ...dedupe(above, 0.3 * A).slice(0, 3).map((p) => ({ price: round(p), type: "resistance" })),
+      ...dedupe(below, 0.3 * A).slice(0, 3).map((p) => ({ price: round(p), type: "support" })),
+    ],
     reasons,
     chart: chartSeries(candles, s),
   };
 }
 
+const dedupe = (arr, tol) => arr.filter((p, i) => i === 0 || Math.abs(p - arr[i - 1]) > tol);
+
 function chartSeries(candles, s) {
   const n = 160;
   const slice = candles.slice(-n);
-  const pick = (arr) => slice.map((_, k) => { const idx = candles.length - n + k; const v = arr[idx]; return v == null ? null : round(v); });
-  return { candles: slice, ema20: pick(s.series.e20), ema50: pick(s.series.e50) };
+  const pick = (arr, f = round) => slice.map((_, k) => { const v = arr[candles.length - n + k]; return v == null ? null : f(v); });
+  return {
+    candles: slice,
+    ema20: pick(s.series.e20), ema50: pick(s.series.e50), ema200: pick(s.series.e200),
+    bbUp: pick(s.series.bbUp), bbLo: pick(s.series.bbLo),
+    rsi: pick(s.series.rsi, (v) => +v.toFixed(1)), macdHist: pick(s.series.mh),
+  };
 }

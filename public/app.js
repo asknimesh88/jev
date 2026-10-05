@@ -1,207 +1,383 @@
+// ---------- helpers
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const fmt = (n) => (n == null || isNaN(n) ? "—" : n >= 1000 ? n.toLocaleString("en-US", { maximumFractionDigits: 2 }) : String(n));
-const big = (n) => (n == null ? "—" : n >= 1e12 ? (n / 1e12).toFixed(2) + "T" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n.toLocaleString());
-const pct = (n, d = 1) => (n == null ? "—" : (n > 0 ? "+" : "") + n.toFixed(d) + "%");
+const fmt = (n) => (n == null || isNaN(n) ? "—" : Math.abs(n) >= 1000 ? Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 }) : String(n));
+const big = (n) => (n == null || isNaN(n) ? "—" : n >= 1e12 ? (n / 1e12).toFixed(2) + "T" : n >= 1e9 ? (n / 1e9).toFixed(2) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(+n.toFixed(2)));
+const pct = (n, d = 1) => (n == null || isNaN(n) ? "—" : (n > 0 ? "+" : "") + n.toFixed(d) + "%");
 const cls = (n) => (n > 0 ? "up" : n < 0 ? "dn" : "mut");
+const decimals = (x) => (x >= 1000 ? 2 : x >= 10 ? 3 : x >= 1 ? 4 : x >= 0.01 ? 6 : 8);
+const store = {
+  get(k, d) { try { return { ...d, ...JSON.parse(localStorage.getItem(k) || "{}") }; } catch { return d; } },
+  getArr(k) { try { return JSON.parse(localStorage.getItem(k) || "[]"); } catch { return []; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const toast = (t) => { const d = document.createElement("div"); d.className = "toast"; d.textContent = t; document.body.appendChild(d); setTimeout(() => d.remove(), 1600); };
+const TF_SEC = { "15m": 900, "1h": 3600 };
 
 const VERDICT = {
-  ENTER_NOW: { label: "ENTER NOW", cls: (s) => (s.direction === "LONG" ? "b-go-long" : "b-go-short"), card: (s) => (s.direction === "LONG" ? "live" : "short") },
-  WAIT: { label: "WAIT FOR PULLBACK", cls: () => "b-wait", card: () => "wait" },
-  MISSED: { label: "CHANCE GONE", cls: () => "b-dead", card: () => "dead" },
-  NO_TRADE: { label: "NO TRADE", cls: () => "b-dead", card: () => "dead" },
+  ENTER_NOW: (s) => ({ label: "ENTER NOW", cls: s.direction === "LONG" ? "go-long" : "go-short", short: "ENTER" }),
+  WAIT: () => ({ label: "WAIT FOR PULLBACK", cls: "wait", short: "WAIT" }),
+  MISSED: () => ({ label: "CHANCE GONE", cls: "dead", short: "GONE" }),
+  NO_TRADE: () => ({ label: "NO TRADE", cls: "dead", short: "NO TRADE" }),
+};
+const vinfo = (s) => VERDICT[s.verdict](s);
+const isLive = (s) => s.verdict === "ENTER_NOW" || s.verdict === "WAIT";
+
+// ---------- state
+const DEFAULTS = { bal: 1000, risk: 1, lev: 10, refresh: 60, watch: "BTCUSDT,SOLUSDT,ETHUSDT,KASUSDT,ALGOUSDT,HBARUSDT,QNTUSDT,ONDOUSDT,XLMUSDT,XDCUSDT,XRPUSDT" };
+let S = store.get("jev.settings", DEFAULTS);
+let cache = store.get("jev.cache", {});          // symbol → {t, price, change24h, v15:{verdict,direction,prob}, v1h:{...}}
+let current = null, activeTf = "15m", timer = null, view = "dash", charts = null;
+const ov = store.get("jev.overlays", { ema: true, bb: false, sr: true, vol: true });
+const watchList = () => S.watch.split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
+
+// ---------- navigation
+document.querySelectorAll(".nav").forEach((b) => (b.onclick = () => go(b.dataset.view)));
+function go(v) {
+  view = v;
+  document.querySelectorAll(".nav").forEach((b) => b.classList.toggle("on", b.dataset.view === v));
+  ["dash", "scan", "set"].forEach((k) => ($("view-" + k).hidden = k !== v));
+  if (v === "scan") renderScan();
+  if (v === "set") renderSettings();
+}
+
+$("form").addEventListener("submit", (e) => { e.preventDefault(); go("dash"); run(); });
+$("run").onclick = () => { go("dash"); run(); };
+$("tfseg").onclick = (e) => { const tf = e.target.dataset?.tf; if (tf) setTf(tf); };
+function setTf(tf) {
+  activeTf = tf;
+  document.querySelectorAll("#tfseg button").forEach((b) => b.classList.toggle("on", b.dataset.tf === tf));
+  if (current) { renderCenter(current); renderRight(current); }
+}
+$("auto").onchange = (e) => {
+  clearInterval(timer);
+  if (e.target.checked) timer = setInterval(() => current && view === "dash" && run(true), S.refresh * 1000);
 };
 
-let chart, current, activeTf = "15m", timer;
+// ---------- sidebar watchlist + chips
+function renderWatch() {
+  $("watch").innerHTML = watchList().map((s) => {
+    const c = cache[s], d = (v) => `<i class="vd ${v ? VERDICT[v.verdict]({ direction: v.direction }).cls : ""}"></i>`;
+    return `<button class="w ${current?.symbol === s ? "on" : ""}" data-s="${s}"><span class="mono">${s.replace(/USDT$|USDC$/, "")}<span class="mut">/${s.endsWith("USDC") ? "USDC" : "USDT"}</span></span><span class="dots">${d(c?.v15)}${d(c?.v1h)}</span></button>`;
+  }).join("");
+  document.querySelectorAll(".w").forEach((b) => (b.onclick = () => { $("sym").value = b.dataset.s; go("dash"); run(); }));
+  $("chips").innerHTML = watchList().map((s) => `<button class="chip" type="button" data-s="${s}">${s}</button>`).join("");
+  document.querySelectorAll(".chip").forEach((b) => (b.onclick = () => { $("sym").value = b.dataset.s; run(); }));
+}
 
-["BTCUSDT", "SOLUSDT", "ETHUSDT", "KASUSDT", "ALGOUSDT", "HBARUSDT", "QNTUSDT", "ONDOUSDT", "XLMUSDT", "XDCUSDT", "XRPUSDT"].forEach((s) => {
-  const b = document.createElement("button");
-  b.className = "chip"; b.textContent = s; b.type = "button";
-  b.onclick = () => { $("sym").value = s; run(); };
-  $("chips").appendChild(b);
-});
-
-$("form").addEventListener("submit", (e) => { e.preventDefault(); run(); });
-$("auto").addEventListener("change", (e) => {
-  clearInterval(timer);
-  if (e.target.checked) timer = setInterval(() => current && run(true), 60000);
-});
-
-const LOAD = ["Pulling candles across 4 timeframes…", "Computing indicators…", "Reading sentiment & funding…", "Checking fundamentals…", "Building the trade plan…"];
-
+// ---------- fetch
+const LOAD = ["Pulling perp candles across 4 timeframes…", "Computing indicators…", "Reading funding & positioning…", "Checking fundamentals…", "Asking Jev for the odds…"];
+async function fetchAnalysis(symbol) {
+  const r = await fetch("/api/analyze?symbol=" + encodeURIComponent(symbol));
+  if (r.status === 401) { location.href = "/login"; throw new Error("Session expired"); }
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || "Analysis failed");
+  remember(d);
+  return d;
+}
+function remember(d) {
+  const v = (s) => ({ verdict: s.verdict, direction: s.direction, prob: s.confidence, jev: !!s.jev?.used });
+  cache[d.symbol] = { t: Date.now(), price: d.price, change24h: d.change24h, funding: d.derivatives?.funding, v15: v(d.signals[0]), v1h: v(d.signals[1]) };
+  store.set("jev.cache", cache);
+  // signal log: record only when verdict changes
+  const log = store.getArr("jev.log");
+  d.signals.forEach((s) => {
+    const prev = log.find((x) => x.symbol === d.symbol && x.tf === s.tf);
+    if (!prev || prev.verdict !== s.verdict || prev.direction !== s.direction) log.unshift({ t: Date.now(), symbol: d.symbol, tf: s.tf, verdict: s.verdict, direction: s.direction, prob: s.confidence });
+  });
+  store.set("jev.log", log.slice(0, 40));
+}
 async function run(silent = false) {
   const symbol = $("sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (!symbol) return;
-  $("sym").value = symbol;
-  $("error").hidden = true;
+  $("sym").value = symbol; $("error").hidden = true;
   let li;
   if (!silent) {
-    $("empty").hidden = true; $("result").hidden = true; $("loading").hidden = false;
+    $("empty").hidden = true; $("center").hidden = true; $("loading").hidden = false;
     let i = 0; $("loadtxt").textContent = LOAD[0];
     li = setInterval(() => ($("loadtxt").textContent = LOAD[++i % LOAD.length]), 900);
   }
   try {
-    const r = await fetch("/api/analyze?symbol=" + encodeURIComponent(symbol));
-    if (r.status === 401) return (location.href = "/login");
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.error || "Analysis failed");
-    current = d;
-    if (!current.signals.find((s) => s.tf === activeTf)) activeTf = "15m";
-    render(d);
+    current = await fetchAnalysis(symbol);
+    $("upd").textContent = "Updated " + new Date(current.generatedAt).toLocaleTimeString();
+    $("jevdot").className = "sdot " + (current.jevActive ? "on" : "off");
+    $("jevtxt").textContent = current.jevActive ? "Jev engine online" : "Jev offline · rules only";
+    renderCenter(current); renderRight(current); renderWatch();
   } catch (e) {
     $("error").hidden = false; $("error").textContent = e.message;
-    if (!silent) $("empty").hidden = false;
-  } finally {
-    clearInterval(li); $("loading").hidden = true;
-  }
+    if (!silent && !current) $("empty").hidden = false;
+  } finally { clearInterval(li); $("loading").hidden = true; }
 }
 
-function sigCard(s) {
-  const v = VERDICT[s.verdict], p = s.plan, live = s.verdict === "ENTER_NOW" || s.verdict === "WAIT";
-  const dirTxt = s.verdict === "NO_TRADE" ? "STAY OUT" : s.verdict === "MISSED" ? "MOVE IS OVER" : s.direction;
-  const dirCls = s.verdict === "NO_TRADE" || s.verdict === "MISSED" ? "mut" : s.direction === "LONG" ? "up" : "dn";
-  const lv = (k, label, val, sub, extra = "") =>
-    `<div class="lv ${extra}" data-copy="${val}"><small>${label}</small><b>${fmt(val)}</b><em>${sub}</em></div>`;
-  return `
-  <div class="card sig ${v.card(s)}">
-    <div class="row1"><span class="tf">${s.tf} signal</span><span class="badge ${v.cls(s)}">${v.label}</span></div>
-    <div class="dir ${dirCls}">${dirTxt}</div>
-    <p class="note">${esc(s.note)}</p>
-    ${s.verdict === "MISSED" || s.verdict === "NO_TRADE" ? `<div class="dead-banner">${s.verdict === "MISSED" ? "The trade chance is gone. Do not chase — wait for a fresh setup." : "No trade on this timeframe."} Levels below are for reference only.</div>` : ""}
-    <div class="conf"><div class="lbl"><span>${s.jev?.used ? "Jev · TP1 hits before stop" : "Confluence strength (Jev offline)"}</span><b>${s.confidence}%</b></div><div class="bar"><div style="width:${s.confidence}%"></div></div>
-      ${s.jev?.used ? `<div class="jevline">Jev reads <b>${esc(s.jev.direction.toUpperCase())}</b> (${Math.round(s.jev.dirConfidence * 100)}%) · opportunity left ${Math.round(s.jev.chanceLeft * 100)}%</div>` : ""}</div>
-    <div class="levels">
-      ${lv("e", p.entryType === "LIMIT" ? "Entry (limit)" : "Entry", p.entry, p.entryType === "LIMIT" ? "wait for fill" : "market / now")}
-      ${lv("sl", "Stop loss", p.stopLoss, `-${p.riskPct}%`, "sl")}
-      ${lv("t1", "Take profit 1", p.tp1, `${p.rr1}R`, "tp")}
-      ${lv("t2", "Take profit 2", p.tp2, `${p.rr2}R`, "tp")}
+// ---------- helpers for signal text
+const sigOf = (d) => d.signals.find((s) => s.tf === activeTf) || d.signals[0];
+const trendLabel = (v) => (v > 0.35 ? "Bullish" : v < -0.35 ? "Bearish" : "Neutral");
+const trendCls = (v) => (v > 0.35 ? "bull" : v < -0.35 ? "bear" : "neutral");
+
+function techRows(s, price) {
+  const i = s.indicators, rows = [];
+  const R = (name, val, bias, label) => rows.push({ name, val, bias, label });
+  R("Price vs EMA 20", fmt(i.ema20), price > i.ema20 ? "bull" : "bear", price > i.ema20 ? "Above" : "Below");
+  R("Price vs EMA 50", fmt(i.ema50), price > i.ema50 ? "bull" : "bear", price > i.ema50 ? "Above" : "Below");
+  if (i.ema200 != null) R("Price vs EMA 200", fmt(i.ema200), price > i.ema200 ? "bull" : "bear", price > i.ema200 ? "Above" : "Below");
+  R("RSI (14)", i.rsi, i.rsi > 70 ? "bear" : i.rsi < 30 ? "bull" : i.rsi > 52 ? "bull" : i.rsi < 48 ? "bear" : "neutral", i.rsi > 70 ? "Overbought" : i.rsi < 30 ? "Oversold" : i.rsi > 52 ? "Bullish" : i.rsi < 48 ? "Bearish" : "Neutral");
+  R("MACD histogram", fmt(i.macdHist), i.macdHist > 0 ? "bull" : "bear", i.macdHist > 0 ? "Positive" : "Negative");
+  R("ADX / DI", `${i.adx} · ${i.pdi}/${i.mdi}`, i.adx < 18 ? "neutral" : i.pdi > i.mdi ? "bull" : "bear", i.adx < 18 ? "Weak" : i.adx > 25 ? "Strong" : "Building");
+  R("Bollinger %B", i.bbPos, i.bbPos > 0.9 ? "bear" : i.bbPos < 0.1 ? "bull" : "neutral", i.bbPos > 0.9 ? "Upper band" : i.bbPos < 0.1 ? "Lower band" : "Mid-range");
+  R("Volume vs 20-avg", i.volRatio + "×", i.volRatio > 1.3 ? "bull" : "neutral", i.volRatio > 1.3 ? "Elevated" : i.volRatio < 0.7 ? "Thin" : "Normal");
+  R("ATR (volatility)", `${fmt(i.atr)} · ${i.atrPct}%`, "neutral", i.atrPct > 2 ? "High" : i.atrPct < 0.5 ? "Low" : "Normal");
+  return rows;
+}
+
+// ---------- CENTER (market strip, chart, analysis)
+function renderCenter(d) {
+  const s = sigOf(d), dv = d.derivatives, fg = d.fearGreed, f = d.fundamentals, st = d.stats24;
+  const v = vinfo(s), tech = techRows(s, s.price);
+  const nb = tech.filter((r) => r.bias === "bull").length, nr = tech.filter((r) => r.bias === "bear").length, nn = tech.length - nb - nr;
+  const macro = d.mtf.find((m) => m.tf === "1d"), h4 = d.mtf.find((m) => m.tf === "4h");
+  const phase = s.indicators.rsi > 70 ? "Extended" : s.indicators.rsi < 30 ? "Capitulation" : s.verdict === "WAIT" ? "Pullback" : s.indicators.adx > 25 ? "Impulse" : "Range";
+  const lad = ladder(s, d.price);
+  const log = store.getArr("jev.log").filter((x) => x.symbol === d.symbol).slice(0, 8);
+
+  $("center").innerHTML = `
+  <div class="strip">
+    <div class="stat px"><small>${esc(d.symbol)} perp</small><b>${fmt(d.price)}</b><em class="${cls(d.change24h)}">${pct(d.change24h, 2)} · 24h</em></div>
+    <div class="stat"><small>24h high</small><b>${fmt(st.high)}</b><em>${pct(((d.price - st.high) / st.high) * 100, 2)} away</em></div>
+    <div class="stat"><small>24h low</small><b>${fmt(st.low)}</b><em>${pct(((d.price - st.low) / st.low) * 100, 2)} above</em></div>
+    <div class="stat"><small>24h volume</small><b>$${big(st.volume)}</b><em>${esc(d.source)}</em></div>
+    <div class="stat"><small>Funding</small><b class="${dv?.funding > 0.0004 ? "warn" : dv?.funding < -0.0002 ? "up" : ""}">${dv?.funding != null ? (dv.funding * 100).toFixed(4) + "%" : "—"}</b><em>${dv?.funding > 0.0004 ? "longs crowded" : dv?.funding < -0.0002 ? "shorts crowded" : "neutral"}</em></div>
+    <div class="stat"><small>Open interest</small><b>${dv?.openInterestValue ? "$" + big(dv.openInterestValue) : dv?.openInterest ? big(dv.openInterest) : "—"}</b><em>L/S ${dv?.longShort?.toFixed(2) ?? "—"}</em></div>
+    <div class="stat"><small>Fear &amp; Greed</small><b>${fg ? fg.value : "—"}</b><em>${fg ? esc(fg.label) : ""}</em></div>
+  </div>
+
+  <div class="card chartcard">
+    <div class="chartbar">
+      <div class="seg" id="ctf">${d.signals.map((x) => `<button data-tf="${x.tf}" class="${x.tf === activeTf ? "on" : ""}">${x.tf}</button>`).join("")}</div>
+      <div class="chartsum">
+        <div><small>SIGNAL</small><b class="${v.cls === "go-long" ? "up" : v.cls === "go-short" ? "dn" : v.cls === "wait" ? "warn" : "mut"}">${v.short}</b></div>
+        <div><small>DAILY TREND</small><b class="${macro.trend > 0.35 ? "up" : macro.trend < -0.35 ? "dn" : "mut"}">${trendLabel(macro.trend)}</b></div>
+        <div><small>4H TREND</small><b class="${h4.trend > 0.35 ? "up" : h4.trend < -0.35 ? "dn" : "mut"}">${trendLabel(h4.trend)}</b></div>
+        <div><small>PHASE</small><b>${phase.toUpperCase()}</b></div>
+      </div>
+      <div class="ovl" id="ovl">${[["ema", "EMA"], ["bb", "Bands"], ["sr", "S/R"], ["vol", "Volume"]].map(([k, n]) => `<button data-k="${k}" class="${ov[k] ? "on" : ""}">${n}</button>`).join("")}</div>
     </div>
-    ${live ? `<div class="inv">⚑ ${esc(p.invalidation)}</div>` : ""}
+    <div id="chart"></div>
+    <div style="position:relative"><span class="rsilbl" style="top:6px">RSI 14</span><div id="rsichart"></div></div>
+  </div>
+
+  <div class="grid g2 mt">
+    <div class="card"><h3>Jev briefing <span class="tag">${d.narrative?.by === "claude" ? "AI" : "rules"}</span></h3><div class="brief">${esc(d.narrative?.text)}</div></div>
+    <div class="card"><h3>Multi-timeframe trend</h3><div class="mtf">${d.mtf.map((m) => `
+      <div class="mtfrow"><b>${m.tf}</b><div class="tbar"><i style="${m.trend >= 0 ? "left:50%" : `left:${50 + m.trend * 50}%`};width:${Math.abs(m.trend) * 50}%;background:var(${m.trend >= 0 ? "--up" : "--dn"})"></i></div>
+      <span class="pill ${trendCls(m.trend)}">${trendLabel(m.trend).toUpperCase()}</span><span class="mut mono">RSI ${m.rsi}</span><span class="mut mono">ADX ${m.adx}</span></div>`).join("")}</div>
+      <p class="mut" style="font-size:12px;margin:12px 0 0">Alignment across timeframes is the single biggest factor in Jev's read: ${d.mtf.filter((m) => m.trend > 0.35).length} bullish · ${d.mtf.filter((m) => m.trend < -0.35).length} bearish of 4.</p></div>
+  </div>
+
+  <div class="grid g3 mt">
+    <div class="card"><h3>Why · ${s.tf}</h3><ul class="r">${s.reasons.map((r) => `<li><span class="dot ${r.bias}"></span><span>${esc(r.text)}</span></li>`).join("")}</ul></div>
+    <div class="card"><h3>Key levels · ${s.tf}</h3><div class="ladder">${lad}</div></div>
+    <div class="card"><h3>Technical readout · ${s.tf}</h3>
+      <div class="consensus"><i style="width:${(nb / tech.length) * 100}%"></i><i style="width:${(nn / tech.length) * 100}%"></i><i style="width:${(nr / tech.length) * 100}%"></i></div>
+      <div class="mut" style="font-size:12px;margin-bottom:6px"><b class="up">${nb} bullish</b> · ${nn} neutral · <b class="dn">${nr} bearish</b></div>
+      <div class="tt">${tech.map((r) => `<div class="tr"><span>${r.name}</span><b>${r.val}</b><span class="pill ${r.bias}">${r.label.toUpperCase()}</span></div>`).join("")}</div></div>
+  </div>
+
+  <div class="grid g3 mt">
+    <div class="card"><h3>Market sentiment</h3>
+      ${fg ? `<div class="mut" style="font-size:12px">Fear &amp; Greed · <b style="color:var(--txt)">${fg.value} ${esc(fg.label)}</b>${fg.previous != null ? ` (prev ${fg.previous})` : ""}</div><div class="fbar"><i style="left:calc(${fg.value}% - 2px)"></i></div>` : ""}
+      <div class="kv"><span>Funding rate</span><span>${dv?.funding != null ? (dv.funding * 100).toFixed(4) + "%" : "n/a"}</span>
+      <span>Long / Short</span><span>${dv?.longShort?.toFixed(2) ?? "n/a"}</span>
+      <span>Open interest</span><span>${dv?.openInterestValue ? "$" + big(dv.openInterestValue) : "n/a"}</span>
+      <span>Mark price</span><span>${fmt(dv?.markPrice)}</span><span>Data source</span><span>${esc(dv?.source ?? "n/a")}</span></div></div>
+    <div class="card"><h3>Fundamentals</h3>${f ? `<div class="kv">
+      <span>Asset</span><span>${esc(f.name)}</span><span>Market-cap rank</span><span>#${f.rank ?? "—"}</span>
+      <span>Market cap</span><span>$${big(f.marketCap)}</span><span>24h volume</span><span>$${big(f.volume24h)}</span>
+      <span>Volume / mcap</span><span>${f.volumeToMcap != null ? (f.volumeToMcap * 100).toFixed(1) + "%" : "—"}</span>
+      <span>7d / 30d</span><span><b class="${cls(f.change7d)}">${pct(f.change7d)}</b> / <b class="${cls(f.change30d)}">${pct(f.change30d)}</b></span>
+      <span>1y</span><span class="${cls(f.change1y)}">${pct(f.change1y, 0)}</span><span>From ATH</span><span class="dn">${pct(f.athChange)}</span>
+      <span>Circulating</span><span>${big(f.circulating)}${f.maxSupply ? ` / ${big(f.maxSupply)}` : ""}</span></div>
+      ${f.categories?.length ? `<p style="margin:12px 0 0">${f.categories.map((c) => `<span class="tag">${esc(c)}</span>`).join(" ")}</p>` : ""}` : `<p class="mut">No fundamental data found for this pair.</p>`}</div>
+    <div class="card"><h3>Signal log · ${esc(d.symbol)}</h3><div class="log">${log.length ? log.map((x) => {
+      const info = VERDICT[x.verdict]({ direction: x.direction });
+      return `<div class="logr"><time>${new Date(x.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</time><span class="vb ${info.cls}">${info.short}</span><span class="mono">${x.tf}</span><span>${x.verdict === "NO_TRADE" || x.verdict === "MISSED" ? "" : x.direction}</span><span class="mut mono">${x.prob}%</span></div>`;
+    }).join("") : `<p class="mut">Changes in verdict will be logged here.</p>`}</div></div>
   </div>`;
+  $("center").hidden = false;
+  $("ctf").onclick = (e) => { const tf = e.target.dataset?.tf; if (tf) setTf(tf); };
+  $("ovl").onclick = (e) => { const k = e.target.dataset?.k; if (!k) return; ov[k] = !ov[k]; store.set("jev.overlays", ov); renderCenter(current); };
+  drawCharts(s);
 }
 
-function comps(c) {
-  const names = { trend: "Trend", momentum: "Momentum", htf: "Higher TF", structure: "Structure", sentiment: "Sentiment", fundamentals: "Fundamentals" };
-  return Object.entries(names).map(([k, n]) => {
-    const v = c[k] ?? 0, w = Math.abs(v) * 50;
-    return `<div class="c"><span>${n}</span><div class="cbar"><i style="${v >= 0 ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:var(${v >= 0 ? "--up" : "--dn"})"></i></div><span class="${cls(v)}">${v > 0 ? "+" : ""}${v.toFixed(2)}</span></div>`;
-  }).join("");
+function ladder(s, price) {
+  const items = [];
+  const p = s.plan, i = s.indicators, live = isLive(s);
+  s.levels.forEach((l) => items.push({ price: l.price, t: l.type === "resistance" ? "Resistance" : "Support", c: l.type === "resistance" ? "res" : "sup" }));
+  [["EMA 20", i.ema20], ["EMA 50", i.ema50], ["EMA 200", i.ema200]].forEach(([t, x]) => x != null && items.push({ price: x, t, c: "ma" }));
+  if (live) [["Take profit 2", p.tp2, "plan tp"], ["Take profit 1", p.tp1, "plan tp"], ["Entry", p.entry, "plan en"], ["Stop loss", p.stopLoss, "plan sl"]].forEach(([t, x, c]) => items.push({ price: x, t, c }));
+  items.push({ price, t: "Price now", c: "px" });
+  return items.sort((a, b) => b.price - a.price).map((x) => `<div class="lad ${x.c}"><span class="t">${x.t}</span><span>${fmt(x.price)}</span><span class="d">${x.c === "px" ? "" : pct(((x.price - price) / price) * 100, 2)}</span></div>`).join("");
 }
 
-function render(d) {
-  const [a, b] = d.signals, T = d.signals.find((s) => s.tf === activeTf) || a;
-  const f = d.fundamentals, dv = d.derivatives, fg = d.fearGreed;
-  $("result").innerHTML = `
-    <div class="head">
-      <div><h2>${esc(d.symbol)} <small class="tag" style="font-size:12px">PERP</small></h2><span class="mut">via ${esc(d.source)} · ${d.jevActive ? "Jev active" : "Jev offline (rules only)"}</span></div>
-      <div class="px">${fmt(d.price)} <small class="${cls(d.change24h)}" style="font-size:16px">${pct(d.change24h, 2)} 24h</small></div>
-      <div class="meta"><button class="tab" id="tg" type="button">Send to Telegram</button><br>Analyzed ${new Date(d.generatedAt).toLocaleTimeString()}<br>Levels based on closed candles</div>
-    </div>
-    <div class="grid2">${sigCard(a)}${sigCard(b)}</div>
+// ---------- charts
+function drawCharts(s) {
+  const el = $("chart"), rel = $("rsichart");
+  if (!window.LightweightCharts) { el.innerHTML = '<p class="mut" style="padding:20px">Chart library failed to load (check network / ad-blocker).</p>'; return; }
+  const L = window.LightweightCharts, off = -new Date().getTimezoneOffset() * 60, C = s.chart.candles, prec = decimals(s.price);
+  const base = { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8793a8", fontFamily: "ui-monospace, monospace" },
+    grid: { vertLines: { color: "#141c2b" }, horzLines: { color: "#141c2b" } }, rightPriceScale: { borderColor: "#1f2a3d" },
+    timeScale: { borderColor: "#1f2a3d", timeVisible: true, secondsVisible: false }, crosshair: { mode: 0 } };
+  const ch = L.createChart(el, base), rc = L.createChart(rel, { ...base, timeScale: { ...base.timeScale, visible: false } });
+  const fmtP = { type: "price", precision: prec, minMove: Math.pow(10, -prec) };
+  const cs = ch.addCandlestickSeries({ upColor: "#22d3a0", downColor: "#ff5c75", borderVisible: false, wickUpColor: "#22d3a0", wickDownColor: "#ff5c75", priceFormat: fmtP });
+  const T = (i) => C[i].t + off;
+  cs.setData(C.map((c, i) => ({ time: T(i), open: c.o, high: c.h, low: c.l, close: c.c })));
+  const line = (c, arr, color, w = 1, style = 0) => { const ls = c.addLineSeries({ color, lineWidth: w, lineStyle: style, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, priceFormat: fmtP }); ls.setData(arr.map((v, i) => (v == null ? null : { time: T(i), value: v })).filter(Boolean)); return ls; };
+  if (ov.ema) { line(ch, s.chart.ema20, "#35a7ff", 1.5); line(ch, s.chart.ema50, "#ffb547", 1.5); line(ch, s.chart.ema200, "#b784ff", 1.5); }
+  if (ov.bb) { line(ch, s.chart.bbUp, "#5b667b", 1, 2); line(ch, s.chart.bbLo, "#5b667b", 1, 2); }
+  if (ov.vol) {
+    const vs = ch.addHistogramSeries({ priceFormat: { type: "volume" }, priceScaleId: "vol", priceLineVisible: false, lastValueVisible: false });
+    ch.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+    vs.setData(C.map((c, i) => ({ time: T(i), value: c.v, color: c.c >= c.o ? "#22d3a033" : "#ff5c7533" })));
+  }
+  const pl = (price, color, title, style = 2) => cs.createPriceLine({ price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title });
+  if (ov.sr) s.levels.forEach((l) => pl(l.price, l.type === "resistance" ? "#ff5c7566" : "#22d3a066", l.type === "resistance" ? "R" : "S", 3));
+  if (isLive(s)) { const p = s.plan; pl(p.entry, "#35a7ff", "ENTRY"); pl(p.stopLoss, "#ff5c75", "SL"); pl(p.tp1, "#22d3a0", "TP1"); pl(p.tp2, "#22d3a0", "TP2"); }
+  // RSI pane
+  const rs = line(rc, s.chart.rsi, "#b784ff", 1.5); rs.applyOptions({ priceFormat: { type: "price", precision: 0, minMove: 1 } });
+  [70, 30].forEach((x) => rs.createPriceLine({ price: x, color: "#3a4660", lineWidth: 1, lineStyle: 2, axisLabelVisible: false }));
+  rc.priceScale("right").applyOptions({ autoScale: false, scaleMargins: { top: 0.08, bottom: 0.08 } });
+  rs.applyOptions({ autoscaleInfoProvider: () => ({ priceRange: { minValue: 0, maxValue: 100 } }) });
+  ch.timeScale().fitContent();
+  ch.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rc.timeScale().setVisibleLogicalRange(r));
+  rc.timeScale().setVisibleLogicalRange(ch.timeScale().getVisibleLogicalRange() || { from: 0, to: C.length });
+  charts = { ch, rc };
+}
 
-    <div class="card calc" id="calc">${calcHTML()}</div>
-    <div class="card chartcard">
-      <div class="tabs">${d.signals.map((s) => `<button class="tab ${s.tf === activeTf ? "on" : ""}" data-tf="${s.tf}">${s.tf}</button>`).join("")}</div>
-      <div id="chart"></div>
-    </div>
+// ---------- RIGHT panel (signal, Jev, scenarios, levels, sizing)
+function renderRight(d) {
+  const s = sigOf(d), v = vinfo(s), live = isLive(s), p = s.plan, j = s.jev;
+  const dirTxt = s.verdict === "NO_TRADE" ? "STAND ASIDE" : s.verdict === "MISSED" ? "DO NOT CHASE" : `${s.direction} ${d.symbol.replace(/USDT$|USDC$/, "")}`;
+  const sup = s.indicators.support, res = s.indicators.resistance, long = s.direction === "LONG";
+  const prim = live
+    ? `${long ? "Buy" : "Sell short"} ${p.entryType === "LIMIT" ? `with a limit at <b>${fmt(p.entry)}</b>` : `at market near <b>${fmt(p.entry)}</b>`}. Stop <b>${fmt(p.stopLoss)}</b> (−${p.riskPct}%). Take half at TP1 (${p.rr1}R), move the stop to breakeven, trail the rest toward TP2 (${p.rr2}R).`
+    : s.verdict === "MISSED" ? "The clean entry has passed. Chasing here gives up the edge — wait for price to reset toward the EMA 20 or for a fresh setup on the next candle close."
+    : "There's no edge worth risking capital on. Stay flat and re-check at the next candle close.";
+  const alt = long
+    ? `If price closes below support <b>${fmt(sup)}</b>, the bullish read is invalid — flip to neutral and only reconsider shorts on a retest from below.`
+    : `If price closes above resistance <b>${fmt(res)}</b>, the bearish read is invalid — flip to neutral and only reconsider longs on a retest from above.`;
+  const total = p.rr2 + 1, rrw = (x) => (x / total) * 100;
 
-    <div class="grid3">
-      <div class="card"><h3>Jev briefing <span class="tag">${d.narrative.by === "claude" ? "AI" : "rules"}</span></h3><div class="brief">${esc(d.narrative.text)}</div></div>
-      <div class="card"><h3>Why · ${T.tf}</h3><ul class="r">${T.reasons.map((r) => `<li><span class="dot ${r.bias}"></span><span>${esc(r.text)}</span></li>`).join("")}</ul></div>
-      <div class="card"><h3>Factor scores · ${T.tf}</h3><div class="comp">${comps(T.components)}</div></div>
-    </div>
+  const circ = 2 * Math.PI * 34;
+  const jevBlock = j?.used ? `
+    <div class="jev"><div class="ring"><svg width="84" height="84"><circle cx="42" cy="42" r="34" fill="none" stroke="#1a2334" stroke-width="8"/><circle cx="42" cy="42" r="34" fill="none" stroke="${s.confidence >= 60 ? "#22d3a0" : s.confidence >= 50 ? "#ffb547" : "#ff5c75"}" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(s.confidence / 100) * circ} ${circ}"/></svg><b>${s.confidence}%</b></div>
+    <div class="jevtxt"><span>TP1 before stop</span><span>Jev reads <b>${esc(j.direction.toUpperCase())}</b> · ${Math.round(j.dirConfidence * 100)}% sure</span><span>Opportunity left <b>${Math.round(j.chanceLeft * 100)}%</b></span><span style="font-size:11px;color:var(--dim)">${esc(j.model || "jev")}</span></div></div>`
+    : `<div class="jev"><div class="ring"><svg width="84" height="84"><circle cx="42" cy="42" r="34" fill="none" stroke="#1a2334" stroke-width="8"/><circle cx="42" cy="42" r="34" fill="none" stroke="#ffb547" stroke-width="8" stroke-linecap="round" stroke-dasharray="${(s.confidence / 100) * circ} ${circ}"/></svg><b>${s.confidence}%</b></div>
+    <div class="jevtxt"><span><b class="warn">Jev offline</b> — showing rules-engine strength.</span><span style="font-size:11px">${esc(j?.reason || "")}</span></div></div>`;
 
-    <div class="grid3">
-      <div class="card"><h3>Technicals · ${T.tf}</h3><div class="kv">
-        <span>RSI</span><span>${T.indicators.rsi}</span><span>ADX</span><span>${T.indicators.adx}</span>
-        <span>ATR</span><span>${fmt(T.indicators.atr)} (${T.indicators.atrPct}%)</span><span>Volume vs avg</span><span>${T.indicators.volRatio}×</span>
-        <span>EMA 20 / 50</span><span>${fmt(T.indicators.ema20)} / ${fmt(T.indicators.ema50)}</span><span>EMA 200</span><span>${fmt(T.indicators.ema200)}</span>
-        <span>Support</span><span>${fmt(T.indicators.support)}</span><span>Resistance</span><span>${fmt(T.indicators.resistance)}</span></div></div>
-      <div class="card"><h3>Market sentiment</h3><div class="kv">
-        <span>Fear &amp; Greed</span><span>${fg ? `${fg.value} · ${esc(fg.label)}` : "n/a"}</span>
-        <span>Funding rate</span><span class="${dv?.funding > 0.0004 ? "warn" : ""}">${dv?.funding != null ? (dv.funding * 100).toFixed(4) + "%" : "n/a"}</span>
-        <span>Long/Short ratio</span><span>${dv?.longShort?.toFixed(2) ?? "n/a"}</span>
-        <span>Open interest</span><span>${dv?.openInterestValue ? "$" + big(dv.openInterestValue) : dv?.openInterest ? big(dv.openInterest) : "n/a"}</span></div></div>
-      <div class="card"><h3>Fundamentals</h3>${f ? `<div class="kv">
-        <span>Asset</span><span>${esc(f.name)}</span><span>Rank</span><span>#${f.rank ?? "—"}</span>
-        <span>Market cap</span><span>$${big(f.marketCap)}</span><span>24h volume</span><span>$${big(f.volume24h)}</span>
-        <span>7d / 30d</span><span><b class="${cls(f.change7d)}">${pct(f.change7d)}</b> / <b class="${cls(f.change30d)}">${pct(f.change30d)}</b></span>
-        <span>From ATH</span><span class="dn">${pct(f.athChange)}</span>
-        <span>Supply</span><span>${big(f.circulating)}${f.maxSupply ? " / " + big(f.maxSupply) : ""}</span></div>` : `<p class="mut">No fundamental data found for this pair.</p>`}</div>
-    </div>`;
-  $("result").hidden = false;
+  // sizing
+  const bal = +S.bal, risk = +S.risk / 100, lev = +S.lev, dist = Math.abs(p.entry - p.stopLoss);
+  const qty = (bal * risk) / dist, notional = qty * p.entry, margin = notional / lev;
+  const MMR = 0.005, liq = long ? p.entry * (1 - 1 / lev + MMR) : p.entry * (1 + 1 / lev - MMR);
+  const safe = long ? liq < p.stopLoss : liq > p.stopLoss;
+  const maxLev = Math.max(1, Math.floor(1 / ((dist / p.entry) * 1.3 + MMR)));
 
-  document.querySelectorAll(".tab").forEach((t) => (t.onclick = () => { activeTf = t.dataset.tf; render(current); }));
-  document.querySelectorAll(".lv").forEach((el) => (el.onclick = () => { navigator.clipboard?.writeText(el.dataset.copy); toast("Copied " + el.dataset.copy); }));
+  $("right").innerHTML = `
+    <div class="rhead"><span>JEV ANALYSIS · ${esc(d.symbol)}</span><span class="sdot ${d.jevActive ? "on" : "off"}"></span></div>
+    <div class="minis">${d.signals.map((x) => { const vi = vinfo(x); return `<button class="mini ${x.tf === activeTf ? "on" : ""}" data-tf="${x.tf}"><small>${x.tf}</small><b class="${vi.cls === "go-long" ? "up" : vi.cls === "go-short" ? "dn" : vi.cls === "wait" ? "warn" : "mut"}">${vi.short}${isLive(x) ? " · " + x.direction : ""}</b></button>`; }).join("")}</div>
+    <div class="hero ${v.cls}"><small>${s.tf} SIGNAL</small><div class="hv">${v.label}</div><div class="hd">${esc(dirTxt)}</div><div class="hn">${esc(s.note)}</div></div>
+    <div class="cdcard"><small>${s.tf} CANDLE CLOSES IN</small><div class="cd" id="cd">--:--</div><p>${live ? "Plan is re-evaluated at every close." : "Next decision point."}</p></div>
+    <div class="card" style="padding:14px">${jevBlock}</div>
+
+    <div class="sec">TRADE SCENARIOS</div>
+    <div class="scn"><h4><span>${live ? "Primary plan" : "Current stance"}</span><span class="tag">${live ? s.direction : "FLAT"}</span></h4>${prim}</div>
+    <div class="scn alt"><h4><span>If it goes wrong</span></h4>${alt}</div>
+
+    <div class="lvl e ${live ? "" : "off"}" data-copy="${p.entry}"><div class="ic">◎</div><div><small>Entry · ${p.entryType.toLowerCase()}</small><b>${fmt(p.entry)}</b></div><em>${live ? (p.entryType === "LIMIT" ? "wait for fill" : "now") : "ref only"}</em></div>
+    <div class="lvl s ${live ? "" : "off"}" data-copy="${p.stopLoss}"><div class="ic">✕</div><div><small>Stop loss</small><b>${fmt(p.stopLoss)}</b></div><em>−${p.riskPct}%</em></div>
+    <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp1}"><div class="ic">✓</div><div><small>Take profit 1</small><b>${fmt(p.tp1)}</b></div><em>${p.rr1}R</em></div>
+    <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp2}"><div class="ic">✓✓</div><div><small>Take profit 2</small><b>${fmt(p.tp2)}</b></div><em>${p.rr2}R</em></div>
+    <div class="rr ${live ? "" : "off"}"><div class="a" style="width:${rrw(1)}%">RISK</div><div class="b" style="width:${rrw(p.rr1)}%">TP1 ${p.rr1}R</div><div class="c" style="width:${rrw(p.rr2 - p.rr1)}%">TP2 ${p.rr2}R</div></div>
+    ${live ? `<div class="mut" style="font-size:11.5px">⚑ ${esc(p.invalidation)}</div>` : ""}
+
+    <div class="sec">PERP POSITION SIZING</div>
+    <div class="card" style="padding:14px"><div class="calc ${live ? "" : "off"}">
+      <span>Risk (${S.risk}% of $${fmt(S.bal)})</span><span>$${(bal * risk).toFixed(2)}</span>
+      <span>Position size</span><span>${qty.toPrecision(4)} (${big(notional)})</span>
+      <span>Margin @ ${lev}x</span><span class="${margin > bal ? "dn" : ""}">$${margin.toFixed(2)}</span>
+      <span>Est. liquidation</span><span class="${safe ? "" : "dn"}">${fmt(+liq.toPrecision(6))}</span>
+      <span>Max safe leverage</span><span>${maxLev}x</span></div>
+      ${safe ? "" : `<div class="dn" style="font-size:12px;margin-top:8px">⚠ Liquidation would hit before your stop. Use ≤ ${maxLev}x.</div>`}
+      <div class="mut" style="font-size:11px;margin-top:8px">Edit account / risk / leverage in Settings.</div></div>
+
+    <div class="sec">FACTOR SCORES · ${s.tf}</div>
+    <div class="card" style="padding:14px"><div class="comp">${compBars(s.components)}</div></div>
+    <button class="btn2" id="tg">✈ Send plan to Telegram</button>`;
+  document.querySelectorAll(".mini").forEach((b) => (b.onclick = () => setTf(b.dataset.tf)));
+  document.querySelectorAll(".lvl").forEach((b) => (b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast("Copied " + b.dataset.copy); }));
   $("tg").onclick = async () => {
     const r = await fetch("/api/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: d.symbol }) });
     toast(r.ok ? "Sent to Telegram" : (await r.json()).error || "Telegram failed");
   };
-  document.querySelectorAll("#calc input").forEach((i) => (i.oninput = () => { saveCalc(); updateCalc(); }));
-  updateCalc();
-  drawChart(T);
+  tick();
+}
+function compBars(c) {
+  const names = { trend: "Trend", momentum: "Momentum", htf: "Higher TF", structure: "Structure", sentiment: "Sentiment", fundamentals: "Fundamentals" };
+  return Object.entries(names).map(([k, n]) => { const v = c[k] ?? 0;
+    return `<div class="c"><span>${n}</span><div class="tbar"><i style="${v >= 0 ? "left:50%" : `left:${50 + v * 50}%`};width:${Math.abs(v) * 50}%;background:var(${v >= 0 ? "--up" : "--dn"})"></i></div><span class="${cls(v)} mono">${v > 0 ? "+" : ""}${v.toFixed(2)}</span></div>`; }).join("");
+}
+function tick() {
+  const el = $("cd"); if (!el) return;
+  const sec = TF_SEC[activeTf], left = sec - (Math.floor(Date.now() / 1000) % sec), m = Math.floor(left / 60), x = left % 60;
+  el.textContent = `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}:${String(x).padStart(2, "0")}`;
+}
+setInterval(tick, 1000);
+
+// ---------- SCANNER
+let scanning = false;
+function renderScan() {
+  const rows = watchList();
+  const cell = (v) => { if (!v) return `<span class="mut">—</span>`; const i = VERDICT[v.verdict]({ direction: v.direction }); return `<span class="vb ${i.cls}">${i.short}${v.verdict === "ENTER_NOW" || v.verdict === "WAIT" ? " " + v.direction : ""}</span> <span class="mono mut">${v.prob}%</span>`; };
+  const rank = (c) => Math.max(...[c?.v15, c?.v1h].map((v) => (v && (v.verdict === "ENTER_NOW" || v.verdict === "WAIT") ? v.prob + (v.verdict === "ENTER_NOW" ? 100 : 0) : -1)));
+  const sorted = [...rows].sort((a, b) => rank(cache[b]) - rank(cache[a]));
+  $("view-scan").innerHTML = `
+    <div class="toolbar"><button class="runbtn" id="scanall">${scanning ? "Scanning…" : "Scan watchlist"}</button>
+      <span class="mut" style="font-size:13px">Runs your ${rows.length} coins one by one (15m + 1h). Actionable setups float to the top.</span></div>
+    <div class="card" style="padding:6px 14px"><table class="tbl"><thead><tr><th>Pair</th><th>Price</th><th>24h</th><th>15m</th><th>1h</th><th>Funding</th><th>Checked</th></tr></thead><tbody>
+    ${sorted.map((s) => { const c = cache[s]; return `<tr class="row" data-s="${s}"><td class="mono"><b>${s}</b></td><td class="mono">${c ? fmt(c.price) : "—"}</td><td class="${cls(c?.change24h)} mono">${c ? pct(c.change24h, 2) : "—"}</td><td>${cell(c?.v15)}</td><td>${cell(c?.v1h)}</td><td class="mono">${c?.funding != null ? (c.funding * 100).toFixed(4) + "%" : "—"}</td><td class="mut">${c ? new Date(c.t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "never"}</td></tr>`; }).join("")}
+    </tbody></table></div>`;
+  $("scanall").onclick = scanAll;
+  document.querySelectorAll("#view-scan .row").forEach((r) => (r.onclick = () => { $("sym").value = r.dataset.s; go("dash"); run(); }));
+}
+async function scanAll() {
+  if (scanning) return; scanning = true;
+  const q = watchList(); let i = 0;
+  const worker = async () => { while (i < q.length) { const s = q[i++]; try { await fetchAnalysis(s); } catch {} if (view === "scan") renderScan(); renderWatch(); } };
+  renderScan();
+  await Promise.all([worker(), worker()]);
+  scanning = false; if (view === "scan") renderScan(); toast("Scan complete");
 }
 
-// ---------- Perp position calculator (risk-based sizing + liquidation check)
-const MMR = 0.005; // approx. maintenance margin rate
-const CK = "jev.calc";
-const loadCalc = () => { try { return { bal: 1000, risk: 1, lev: 10, ...JSON.parse(localStorage.getItem(CK) || "{}") }; } catch { return { bal: 1000, risk: 1, lev: 10 }; } };
-const saveCalc = () => { try { localStorage.setItem(CK, JSON.stringify({ bal: +$("c-bal").value, risk: +$("c-risk").value, lev: +$("c-lev").value })); } catch {} };
-function calcHTML() {
-  const c = loadCalc();
-  return `<h3>Perp position sizing</h3>
-  <div class="calcin">
-    <label>Account (USDT)<input id="c-bal" type="number" min="1" value="${c.bal}"></label>
-    <label>Risk per trade (%)<input id="c-risk" type="number" min="0.1" step="0.1" value="${c.risk}"></label>
-    <label>Leverage (x)<input id="c-lev" type="number" min="1" max="125" value="${c.lev}"></label>
-  </div><div class="calcout" id="c-out"></div>`;
-}
-function updateCalc() {
-  if (!current) return;
-  const bal = +$("c-bal").value, risk = +$("c-risk").value / 100, lev = +$("c-lev").value;
-  $("c-out").innerHTML = current.signals.map((s) => {
-    const p = s.plan, dist = Math.abs(p.entry - p.stopLoss), long = s.direction === "LONG";
-    const qty = (bal * risk) / dist, notional = qty * p.entry, margin = notional / lev;
-    const liq = long ? p.entry * (1 - 1 / lev + MMR) : p.entry * (1 + 1 / lev - MMR);
-    const safe = long ? liq < p.stopLoss : liq > p.stopLoss;
-    const maxLev = Math.max(1, Math.floor(1 / ((dist / p.entry) * 1.3 + MMR)));
-    const dead = s.verdict === "MISSED" || s.verdict === "NO_TRADE";
-    return `<div class="cc ${dead ? "dim" : ""}"><b>${s.tf} ${dead ? "(no trade)" : s.direction}</b>
-      <div class="kv"><span>Risk</span><span>$${(bal * risk).toFixed(2)}</span><span>Size</span><span>${qty.toPrecision(4)} (${big(notional)} USDT)</span>
-      <span>Margin used</span><span class="${margin > bal ? "dn" : ""}">${margin.toFixed(2)} USDT</span>
-      <span>Est. liquidation</span><span class="${safe ? "" : "dn"}">${fmt(+liq.toPrecision(6))}</span>
-      <span>Max leverage (liq beyond stop)</span><span>${maxLev}x</span></div>
-      ${safe ? "" : `<div class="dn" style="font-size:12px;margin-top:6px">⚠ Liquidation is hit before your stop — lower leverage to ≤ ${maxLev}x.</div>`}</div>`;
-  }).join("");
-}
-
-function drawChart(s) {
-  const el = $("chart");
-  if (!window.LightweightCharts) { el.innerHTML = '<p class="mut">Chart library failed to load.</p>'; return; }
-  const L = window.LightweightCharts;
-  chart = L.createChart(el, {
-    height: 420, autoSize: true,
-    layout: { background: { color: "transparent" }, textColor: "#8a94a8" },
-    grid: { vertLines: { color: "#1a2130" }, horzLines: { color: "#1a2130" } },
-    rightPriceScale: { borderColor: "#222a3a" }, timeScale: { borderColor: "#222a3a", timeVisible: true },
-    crosshair: { mode: 0 },
-  });
-  const cs = chart.addCandlestickSeries({ upColor: "#25d09a", downColor: "#ff5d73", borderVisible: false, wickUpColor: "#25d09a", wickDownColor: "#ff5d73" });
-  const C = s.chart.candles;
-  cs.setData(C.map((c) => ({ time: c.t, open: c.o, high: c.h, low: c.l, close: c.c })));
-  const line = (arr, color) => {
-    const ls = chart.addLineSeries({ color, lineWidth: 1, priceLineVisible: false, lastValueVisible: false });
-    ls.setData(arr.map((v, i) => (v == null ? null : { time: C[i].t, value: v })).filter(Boolean));
+// ---------- SETTINGS
+function renderSettings() {
+  $("view-set").innerHTML = `
+    <div class="card"><h3>Position sizing defaults</h3><div class="sf">
+      <label>Account size (USDT)<input id="s-bal" type="number" min="1" value="${S.bal}"></label>
+      <label>Risk per trade (%)<input id="s-risk" type="number" min="0.1" step="0.1" value="${S.risk}"></label>
+      <label>Leverage (x)<input id="s-lev" type="number" min="1" max="125" value="${S.lev}"></label>
+      <label>Auto-refresh every (sec)<input id="s-ref" type="number" min="20" step="10" value="${S.refresh}"></label></div>
+      <h3 style="margin-top:6px">Watchlist</h3><div class="sf"><label style="grid-column:1/-1">Comma-separated perp symbols<textarea id="s-watch" rows="2">${esc(S.watch)}</textarea></label></div>
+      <div class="toolbar"><button class="runbtn" id="s-save">Save</button><button class="btn2" id="s-tg" style="padding:10px 18px">Send Telegram test</button></div>
+      <p class="mut" style="font-size:12.5px">These are stored in this browser only. The Telegram alert watcher uses its own list (<span class="mono">WATCHLIST</span> in <span class="mono">worker/wrangler.toml</span>).</p></div>`;
+  $("s-save").onclick = () => {
+    S = { bal: +$("s-bal").value || 1000, risk: +$("s-risk").value || 1, lev: +$("s-lev").value || 10, refresh: Math.max(20, +$("s-ref").value || 60), watch: $("s-watch").value.toUpperCase() || DEFAULTS.watch };
+    store.set("jev.settings", S); renderWatch(); if (current) renderRight(current); toast("Saved");
   };
-  line(s.chart.ema20, "#7c9cff"); line(s.chart.ema50, "#ffb84d");
-  if (s.verdict === "ENTER_NOW" || s.verdict === "WAIT") {
-    const p = s.plan, pl = (price, color, title) => cs.createPriceLine({ price, color, lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title });
-    pl(p.entry, "#7c9cff", "ENTRY"); pl(p.stopLoss, "#ff5d73", "SL"); pl(p.tp1, "#25d09a", "TP1"); pl(p.tp2, "#25d09a", "TP2");
-  }
-  chart.timeScale().fitContent();
+  $("s-tg").onclick = async () => {
+    const r = await fetch("/api/notify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ symbol: "BTCUSDT" }) });
+    toast(r.ok ? "Test sent — check Telegram" : (await r.json()).error || "Telegram failed");
+  };
 }
 
-function toast(t) {
-  const d = document.createElement("div"); d.className = "toast"; d.textContent = t;
-  document.body.appendChild(d); setTimeout(() => d.remove(), 1400);
-}
+// ---------- boot
+renderWatch();
+$("right").innerHTML = `<div class="rhead"><span>JEV ANALYSIS</span><span class="sdot"></span></div><p class="placeholder">Run an analysis to see the signal, probability, trade plan and sizing here.</p>`;

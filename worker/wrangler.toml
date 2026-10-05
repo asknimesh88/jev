@@ -3,9 +3,10 @@ main = "index.js"
 compatibility_date = "2025-01-01"
 
 [triggers]
-crons = ["*/5 * * * *"]
+crons = ["*/3 * * * *"]
 
 [vars]
+BATCH = "3"   # symbols scanned per run (keeps under the 50-subrequest free-plan limit)
 WATCHLIST = "BTCUSDT,SOLUSDT,ETHUSDT,KASUSDT,ALGOUSDT,HBARUSDT,QNTUSDT,ONDOUSDT,XLMUSDT,XDCUSDT,XRPUSDT"
 
 # 1) npx wrangler kv namespace create STATE   → paste the id below
