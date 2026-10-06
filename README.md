@@ -51,3 +51,8 @@ risk-based position size, margin, estimated liquidation, and a warning if liquid
 3. Message the bot `BTCUSDT` (or just `sol`) → it replies with the 15m + 1h plan. The dashboard also has a **Send to Telegram** button.
 4. Push alerts: deploy the watcher — `cd worker`, create KV (`npx wrangler kv namespace create STATE`), paste the id in `worker/wrangler.toml`,
    set `WATCHLIST`, add the secrets listed there, `npx wrangler deploy`. Every 3 min it scans a rotating batch of 3 coins (whole list &#126; every 12 min) and alerts when a setup becomes ENTER NOW / WAIT, and when a pending one dies.
+
+## Smart-money overlay (SMC toggle on the chart)
+Drawn from closed candles by `functions/_lib/smc.js` using swing pivots (w=3): **BOS/CHoCH** (a close through the last swing; CHoCH = against the prior trend),
+**order blocks** (last opposite-colour candle at the origin of the breaking leg; shown until price closes through them), **liquidity sweeps** (wick through a swing, close back),
+and **EQH/EQL** pools (equal highs/lows not yet taken). They're added to the "Why" list and sent to Jev as context, but are *not* part of the rules score (no backtest yet).
