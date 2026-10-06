@@ -1,0 +1,432 @@
+//@version=5
+// ─────────────────────────────────────────────────────────────────────────────
+// Jev SMC Toolkit
+//   1) EMA ribbon (8 EMAs, each toggle-able)      5) Bullish / Bearish FVGs + ★ best FVG to be revisited
+//   2) Order blocks (bull / bear, until mitigated)  6) VWAP midline (Day / Week / Month anchor)
+//   3) Liquidity sweeps                             7) High-probability setup (A+) with SL / TP levels
+//   4) BOS and CHoCH (change of character)
+// All structure logic runs on CLOSED bars, so nothing repaints once a bar has closed.
+// Educational tool, not financial advice. The setup score is a confluence score, NOT a win probability.
+// ─────────────────────────────────────────────────────────────────────────────
+indicator("Jev SMC Toolkit", shorttitle="Jev SMC", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=500)
+
+// ═════════════════════════════ INPUTS ═════════════════════════════
+bullC = input.color(#22d3a0, "Bullish colour", group="Colours")
+bearC = input.color(#ff5c75, "Bearish colour", group="Colours")
+goldC = input.color(#ffd24d, "Highlight / sweep colour", group="Colours")
+
+gE = "1 · EMA ribbon"
+showRib = input.bool(true, "Show ribbon (master switch)", group=gE)
+on1 = input.bool(true, "EMA 1", inline="e1", group=gE)
+len1 = input.int(8, "", minval=1, inline="e1", group=gE)
+on2 = input.bool(true, "EMA 2", inline="e2", group=gE)
+len2 = input.int(13, "", minval=1, inline="e2", group=gE)
+on3 = input.bool(true, "EMA 3", inline="e3", group=gE)
+len3 = input.int(21, "", minval=1, inline="e3", group=gE)
+on4 = input.bool(true, "EMA 4", inline="e4", group=gE)
+len4 = input.int(34, "", minval=1, inline="e4", group=gE)
+on5 = input.bool(true, "EMA 5", inline="e5", group=gE)
+len5 = input.int(55, "", minval=1, inline="e5", group=gE)
+on6 = input.bool(true, "EMA 6", inline="e6", group=gE)
+len6 = input.int(89, "", minval=1, inline="e6", group=gE)
+on7 = input.bool(false, "EMA 7", inline="e7", group=gE)
+len7 = input.int(144, "", minval=1, inline="e7", group=gE)
+on8 = input.bool(true, "EMA 8", inline="e8", group=gE)
+len8 = input.int(200, "", minval=1, inline="e8", group=gE)
+
+gS = "2 · Structure, sweeps, order blocks"
+swingLen = input.int(5, "Swing length (bars each side)", minval=2, maxval=30, group=gS)
+showBOS = input.bool(true, "Show BOS", group=gS)
+showCHoCH = input.bool(true, "Show CHoCH (change of character)", group=gS)
+showSweep = input.bool(true, "Show liquidity sweeps", group=gS)
+showOB = input.bool(true, "Show order blocks", group=gS)
+maxOB = input.int(6, "Max active order blocks", minval=1, maxval=30, group=gS)
+hideMitOB = input.bool(true, "Hide mitigated order blocks", group=gS)
+
+gF = "3 · Fair value gaps"
+showFVG = input.bool(true, "Show FVGs", group=gF)
+fvgMinAtr = input.float(0.15, "Min gap size (× ATR)", minval=0.0, step=0.05, group=gF)
+maxFVG = input.int(10, "Max active FVGs", minval=1, maxval=40, group=gF)
+hideFilled = input.bool(true, "Hide filled FVGs", group=gF)
+hiBest = input.bool(true, "★ Highlight the FVG price is most likely to revisit", group=gF)
+
+gV = "4 · VWAP (midline only)"
+showVWAP = input.bool(false, "Show VWAP", group=gV)
+vwapAnchor = input.string("Day", "Anchor", options=["Day", "Week", "Month"], group=gV)
+vwapColor = input.color(#35a7ff, "Colour", group=gV)
+
+gP = "5 · High-probability setup"
+showSetup = input.bool(true, "Show A+ setups", group=gP)
+setupMin = input.int(75, "Minimum score (0-100)", minval=40, maxval=100, group=gP)
+trendLen = input.int(50, "Trend EMA length", minval=2, group=gP)
+sweepLook = input.int(15, "Sweep counts if within N bars", minval=1, group=gP)
+cooldown = input.int(8, "Cooldown between setups (bars)", minval=0, group=gP)
+showLevels = input.bool(true, "Draw entry / SL / TP", group=gP)
+rrTarget = input.float(2.0, "Take-profit (R multiple)", minval=0.5, step=0.5, group=gP)
+
+// ═════════════════════════════ 1 · EMA RIBBON ═════════════════════════════
+e1 = ta.ema(close, len1)
+e2 = ta.ema(close, len2)
+e3 = ta.ema(close, len3)
+e4 = ta.ema(close, len4)
+e5 = ta.ema(close, len5)
+e6 = ta.ema(close, len6)
+e7 = ta.ema(close, len7)
+e8 = ta.ema(close, len8)
+
+// green while the EMA is rising, red while falling; slower EMAs are more opaque
+f_rc(float e, int t) => e > e[1] ? color.new(bullC, t) : color.new(bearC, t)
+
+plot(showRib and on1 ? e1 : na, "EMA 1", color=f_rc(e1, 60), linewidth=1)
+plot(showRib and on2 ? e2 : na, "EMA 2", color=f_rc(e2, 50), linewidth=1)
+plot(showRib and on3 ? e3 : na, "EMA 3", color=f_rc(e3, 40), linewidth=1)
+plot(showRib and on4 ? e4 : na, "EMA 4", color=f_rc(e4, 30), linewidth=1)
+plot(showRib and on5 ? e5 : na, "EMA 5", color=f_rc(e5, 20), linewidth=2)
+plot(showRib and on6 ? e6 : na, "EMA 6", color=f_rc(e6, 10), linewidth=2)
+plot(showRib and on7 ? e7 : na, "EMA 7", color=f_rc(e7, 5), linewidth=2)
+plot(showRib and on8 ? e8 : na, "EMA 8", color=f_rc(e8, 0), linewidth=3)
+
+// ═════════════════════════════ 4 · VWAP ═════════════════════════════
+dChg = timeframe.change("D")
+wChg = timeframe.change("W")
+mChg = timeframe.change("M")
+vwapV = ta.vwap(hlc3, vwapAnchor == "Day" ? dChg : vwapAnchor == "Week" ? wChg : mChg)
+plot(showVWAP ? vwapV : na, "VWAP", color=vwapColor, linewidth=2)
+
+// ═════════════════════════════ SHARED SERIES ═════════════════════════════
+atr = ta.atr(14)
+rsi = ta.rsi(close, 14)
+trendEma = ta.ema(close, trendLen)
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+rangeMid = (ta.highest(high, 50) + ta.lowest(low, 50)) / 2
+
+// ═════════════════════════════ STATE ═════════════════════════════
+var float swHi = na
+var int swHiBar = na
+var bool swHiUsed = true
+var float swLo = na
+var int swLoBar = na
+var bool swLoUsed = true
+var int trend = 0            // +1 bullish structure, -1 bearish, 0 unknown
+var int lastSweepLoBar = na  // sell-side liquidity taken (bullish rejection)
+var int lastSweepHiBar = na  // buy-side liquidity taken (bearish rejection)
+var int lastSetupBar = na
+
+var obBox = array.new<box>()
+var obBull = array.new<bool>()
+var obTop = array.new<float>()
+var obBot = array.new<float>()
+
+var fvBox = array.new<box>()
+var fvBull = array.new<bool>()
+var fvTop = array.new<float>()
+var fvBot = array.new<float>()
+var fvImp = array.new<float>()
+var fvTapped = array.new<bool>()
+var fvBirth = array.new<int>()
+
+// per-bar event flags (used by alerts)
+bool bosUp = false
+bool bosDn = false
+bool chochUp = false
+bool chochDn = false
+bool sweepHi = false
+bool sweepLo = false
+bool setupLong = false
+bool setupShort = false
+
+// ═════════════════════════════ FUNCTIONS ═════════════════════════════
+// last opposite-coloured candle inside the leg that produced the break (lowest low for bull, highest high for bear)
+f_findOB(bool bull, int n) =>
+    int idx = -1
+    float best = na
+    for i = 1 to math.max(n, 1)
+        bool opp = bull ? close[i] < open[i] : close[i] > open[i]
+        if opp
+            float v = bull ? low[i] : high[i]
+            if na(best) or (bull ? v < best : v > best)
+                best := v
+                idx := i
+    idx
+
+f_addOB(bool bull, int idx, color c, int maxN) =>
+    box b = box.new(bar_index - idx, high[idx], bar_index, low[idx], border_color=color.new(c, 35), bgcolor=color.new(c, 85), extend=extend.right, text=bull ? "Bull OB" : "Bear OB", text_color=c, text_size=size.tiny, text_halign=text.align_right)
+    array.push(obBox, b)
+    array.push(obBull, bull)
+    array.push(obTop, high[idx])
+    array.push(obBot, low[idx])
+    if array.size(obBox) > maxN
+        box.delete(array.shift(obBox))
+        array.shift(obBull)
+        array.shift(obTop)
+        array.shift(obBot)
+
+// an order block is mitigated once price CLOSES through it
+f_updOB(bool hide) =>
+    int n = array.size(obBox)
+    if n > 0
+        for i = n - 1 to 0
+            box b = array.get(obBox, i)
+            bool bl = array.get(obBull, i)
+            bool mit = bl ? close < array.get(obBot, i) : close > array.get(obTop, i)
+            if mit
+                if hide
+                    box.delete(b)
+                else
+                    box.set_extend(b, extend.none)
+                    box.set_right(b, bar_index)
+                    box.set_bgcolor(b, color.new(color.gray, 92))
+                    box.set_border_color(b, color.new(color.gray, 70))
+                array.remove(obBox, i)
+                array.remove(obBull, i)
+                array.remove(obTop, i)
+                array.remove(obBot, i)
+
+f_addFVG(bool bull, float top, float bot, float imp, color c, int maxN) =>
+    box b = box.new(bar_index - 2, top, bar_index, bot, border_color=color.new(c, 55), bgcolor=color.new(c, 88), extend=extend.right, text="FVG", text_color=color.new(c, 20), text_size=size.tiny, text_halign=text.align_right)
+    array.push(fvBox, b)
+    array.push(fvBull, bull)
+    array.push(fvTop, top)
+    array.push(fvBot, bot)
+    array.push(fvImp, imp)
+    array.push(fvTapped, false)
+    array.push(fvBirth, bar_index)
+    if array.size(fvBox) > maxN
+        box.delete(array.shift(fvBox))
+        array.shift(fvBull)
+        array.shift(fvTop)
+        array.shift(fvBot)
+        array.shift(fvImp)
+        array.shift(fvTapped)
+        array.shift(fvBirth)
+
+// FVG is filled once price CLOSES through its far edge; "tapped" = price has already revisited it
+f_updFVG(bool hide) =>
+    int n = array.size(fvBox)
+    if n > 0
+        for i = n - 1 to 0
+            box b = array.get(fvBox, i)
+            bool bl = array.get(fvBull, i)
+            float t = array.get(fvTop, i)
+            float bo = array.get(fvBot, i)
+            bool filled = bl ? close < bo : close > t
+            if filled
+                if hide
+                    box.delete(b)
+                else
+                    box.set_extend(b, extend.none)
+                    box.set_right(b, bar_index)
+                    box.set_bgcolor(b, color.new(color.gray, 94))
+                    box.set_border_color(b, color.new(color.gray, 75))
+                array.remove(fvBox, i)
+                array.remove(fvBull, i)
+                array.remove(fvTop, i)
+                array.remove(fvBot, i)
+                array.remove(fvImp, i)
+                array.remove(fvTapped, i)
+                array.remove(fvBirth, i)
+            else if bar_index > array.get(fvBirth, i) and (bl ? low <= t : high >= bo)
+                array.set(fvTapped, i, true)
+
+f_obOverlap(bool bull, float bo, float t) =>
+    bool hit = false
+    int n = array.size(obBox)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(obBull, i) == bull and array.get(obBot, i) <= t and array.get(obTop, i) >= bo
+                hit := true
+    hit
+
+// 0-100 "likelihood of being revisited & respected". Returns -1 for gaps on the wrong side of price.
+// proximity 25 · structure bias 20 · displacement 15 · size 10 · untouched 10 · premium/discount 10 · OB confluence 10
+f_fvgScore(int i, float price, float a, int bias, float mid) =>
+    bool bl = array.get(fvBull, i)
+    float t = array.get(fvTop, i)
+    float bo = array.get(fvBot, i)
+    float res = -1.0
+    bool relevant = bl ? price >= bo : price <= t
+    if relevant
+        float dist = math.max(bl ? price - t : bo - price, 0.0)
+        float prox = 25.0 * math.max(0.0, 1.0 - dist / (6.0 * a))
+        float align = bias == 0 ? 10.0 : ((bias == 1) == bl ? 20.0 : 0.0)
+        float imp = 15.0 * math.min(array.get(fvImp, i) / 2.0, 1.0)
+        float sz = 10.0 * math.min((t - bo) / a / 1.5, 1.0)
+        float fresh = array.get(fvTapped, i) ? 0.0 : 10.0
+        float cm = (t + bo) / 2
+        float pd = (bl ? cm < mid : cm > mid) ? 10.0 : 0.0
+        float conf = f_obOverlap(bl, bo, t) ? 10.0 : 0.0
+        res := prox + align + imp + sz + fresh + pd + conf
+    res
+
+// did this bar tap (wick into, close outside the far side of) an active OB or FVG of the given direction?
+f_zoneTap(bool bull) =>
+    bool hit = false
+    float zb = na
+    int n = array.size(obBox)
+    if n > 0
+        for i = 0 to n - 1
+            if array.get(obBull, i) == bull
+                float t = array.get(obTop, i)
+                float b = array.get(obBot, i)
+                if (bull ? (low <= t and close > b) : (high >= b and close < t))
+                    hit := true
+                    zb := na(zb) ? b : (bull ? math.min(zb, b) : math.max(zb, b))
+    int m = array.size(fvBox)
+    if m > 0
+        for j = 0 to m - 1
+            if array.get(fvBull, j) == bull
+                float t2 = array.get(fvTop, j)
+                float b2 = array.get(fvBot, j)
+                if (bull ? (low <= t2 and close > b2) : (high >= b2 and close < t2))
+                    hit := true
+                    zb := na(zb) ? b2 : (bull ? math.min(zb, b2) : math.max(zb, b2))
+    [hit, zb]
+
+// ═════════════════════════════ MAIN (closed bars only) ═════════════════════════════
+if barstate.isconfirmed
+    f_updOB(hideMitOB)
+    f_updFVG(hideFilled)
+
+    // ── 5 · setup check uses zones that existed BEFORE this bar's new structure
+    if showSetup
+        [hitL, zbL] = f_zoneTap(true)
+        [hitS, zbS] = f_zoneTap(false)
+        bool cooled = na(lastSetupBar) or bar_index - lastSetupBar > cooldown
+        bool swLoRecent = not na(lastSweepLoBar) and bar_index - lastSweepLoBar <= sweepLook
+        bool swHiRecent = not na(lastSweepHiBar) and bar_index - lastSweepHiBar <= sweepLook
+        if cooled and hitL and close > open and rsi < 75
+            float scL = 30.0 + (trend == 1 ? 25.0 : 0.0) + (swLoRecent ? 20.0 : 0.0) + (close > trendEma and trendEma > trendEma[1] ? 15.0 : 0.0) + (close > vwapV ? 10.0 : 0.0)
+            if scL >= setupMin and trend == 1
+                setupLong := true
+                lastSetupBar := bar_index
+                label.new(bar_index, low, "A+ LONG " + str.tostring(scL, "#"), style=label.style_label_up, color=bullC, textcolor=color.black, size=size.small)
+                if showLevels
+                    float slL = math.min(nz(zbL, low), low) - 0.2 * atr
+                    float tpL = close + rrTarget * (close - slL)
+                    line.new(bar_index, close, bar_index + 15, close, color=color.new(color.white, 20), style=line.style_dashed)
+                    line.new(bar_index, slL, bar_index + 15, slL, color=bearC, style=line.style_dashed)
+                    line.new(bar_index, tpL, bar_index + 15, tpL, color=bullC, style=line.style_dashed)
+                    label.new(bar_index + 15, slL, "SL", style=label.style_label_left, color=color.new(bearC, 60), textcolor=color.white, size=size.tiny)
+                    label.new(bar_index + 15, tpL, "TP " + str.tostring(rrTarget, "#.#") + "R", style=label.style_label_left, color=color.new(bullC, 60), textcolor=color.white, size=size.tiny)
+        if cooled and not setupLong and hitS and close < open and rsi > 25
+            float scS = 30.0 + (trend == -1 ? 25.0 : 0.0) + (swHiRecent ? 20.0 : 0.0) + (close < trendEma and trendEma < trendEma[1] ? 15.0 : 0.0) + (close < vwapV ? 10.0 : 0.0)
+            if scS >= setupMin and trend == -1
+                setupShort := true
+                lastSetupBar := bar_index
+                label.new(bar_index, high, "A+ SHORT " + str.tostring(scS, "#"), style=label.style_label_down, color=bearC, textcolor=color.white, size=size.small)
+                if showLevels
+                    float slS = math.max(nz(zbS, high), high) + 0.2 * atr
+                    float tpS = close - rrTarget * (slS - close)
+                    line.new(bar_index, close, bar_index + 15, close, color=color.new(color.white, 20), style=line.style_dashed)
+                    line.new(bar_index, slS, bar_index + 15, slS, color=bearC, style=line.style_dashed)
+                    line.new(bar_index, tpS, bar_index + 15, tpS, color=bullC, style=line.style_dashed)
+                    label.new(bar_index + 15, slS, "SL", style=label.style_label_left, color=color.new(bearC, 60), textcolor=color.white, size=size.tiny)
+                    label.new(bar_index + 15, tpS, "TP " + str.tostring(rrTarget, "#.#") + "R", style=label.style_label_left, color=color.new(bullC, 60), textcolor=color.white, size=size.tiny)
+
+    // ── confirmed swing points
+    if not na(ph)
+        swHi := ph
+        swHiBar := bar_index - swingLen
+        swHiUsed := false
+    if not na(pl)
+        swLo := pl
+        swLoBar := bar_index - swingLen
+        swLoUsed := false
+
+    // ── upside: close through the last swing high = BOS / CHoCH; wick through + close back = buy-side sweep
+    if not na(swHi) and not swHiUsed
+        if close > swHi
+            swHiUsed := true
+            bool isCh = trend == -1
+            if isCh
+                chochUp := true
+            else
+                bosUp := true
+            if (isCh and showCHoCH) or (not isCh and showBOS)
+                line.new(swHiBar, swHi, bar_index, swHi, color=isCh ? color.orange : color.new(color.silver, 10), style=line.style_dashed)
+                label.new(math.round((swHiBar + bar_index) / 2), swHi, isCh ? "CHoCH" : "BOS", style=label.style_label_down, color=color.new(color.black, 100), textcolor=isCh ? color.orange : color.silver, size=size.small)
+            trend := 1
+            if showOB
+                int obN = na(swLoBar) ? swingLen * 3 : bar_index - swLoBar
+                int idx = f_findOB(true, math.min(obN, 100))
+                if idx >= 0
+                    f_addOB(true, idx, bullC, maxOB)
+        else if high > swHi
+            swHiUsed := true
+            sweepHi := true
+            lastSweepHiBar := bar_index
+            if showSweep
+                line.new(swHiBar, swHi, bar_index, swHi, color=color.new(goldC, 30), style=line.style_dotted)
+                label.new(bar_index, high, "◆ Sweep", style=label.style_label_down, color=color.new(color.black, 100), textcolor=goldC, size=size.small)
+
+    // ── downside: mirror image
+    if not na(swLo) and not swLoUsed
+        if close < swLo
+            swLoUsed := true
+            bool isCh2 = trend == 1
+            if isCh2
+                chochDn := true
+            else
+                bosDn := true
+            if (isCh2 and showCHoCH) or (not isCh2 and showBOS)
+                line.new(swLoBar, swLo, bar_index, swLo, color=isCh2 ? color.orange : color.new(color.silver, 10), style=line.style_dashed)
+                label.new(math.round((swLoBar + bar_index) / 2), swLo, isCh2 ? "CHoCH" : "BOS", style=label.style_label_up, color=color.new(color.black, 100), textcolor=isCh2 ? color.orange : color.silver, size=size.small)
+            trend := -1
+            if showOB
+                int obN2 = na(swHiBar) ? swingLen * 3 : bar_index - swHiBar
+                int idx2 = f_findOB(false, math.min(obN2, 100))
+                if idx2 >= 0
+                    f_addOB(false, idx2, bearC, maxOB)
+        else if low < swLo
+            swLoUsed := true
+            sweepLo := true
+            lastSweepLoBar := bar_index
+            if showSweep
+                line.new(swLoBar, swLo, bar_index, swLo, color=color.new(goldC, 30), style=line.style_dotted)
+                label.new(bar_index, low, "◆ Sweep", style=label.style_label_up, color=color.new(color.black, 100), textcolor=goldC, size=size.small)
+
+    // ── 3 · fair value gaps (3-candle imbalance with a strong middle candle)
+    if showFVG
+        float minGap = fvgMinAtr * atr
+        if low > high[2] and close[1] > open[1] and low - high[2] > minGap
+            f_addFVG(true, low, high[2], math.abs(close[1] - open[1]) / atr, bullC, maxFVG)
+        if high < low[2] and close[1] < open[1] and low[2] - high > minGap
+            f_addFVG(false, low[2], high, math.abs(close[1] - open[1]) / atr, bearC, maxFVG)
+
+// ═════════════════════════════ ★ BEST FVG (live, last bar) ═════════════════════════════
+if barstate.islast and showFVG
+    int nF = array.size(fvBox)
+    int bestI = -1
+    float bestS = -1.0
+    if nF > 0
+        for i = 0 to nF - 1
+            float sc = f_fvgScore(i, close, atr, trend, rangeMid)
+            if sc > bestS
+                bestS := sc
+                bestI := i
+        for i = 0 to nF - 1
+            box b = array.get(fvBox, i)
+            bool bl = array.get(fvBull, i)
+            color c = bl ? bullC : bearC
+            if hiBest and i == bestI and bestS >= 0
+                box.set_border_color(b, goldC)
+                box.set_border_width(b, 3)
+                box.set_bgcolor(b, color.new(c, 65))
+                box.set_text(b, "★ BEST FVG " + str.tostring(bestS, "#"))
+                box.set_text_color(b, goldC)
+            else
+                box.set_border_color(b, color.new(c, 55))
+                box.set_border_width(b, 1)
+                box.set_bgcolor(b, color.new(c, 88))
+                box.set_text(b, "FVG")
+                box.set_text_color(b, color.new(c, 20))
+
+// ═════════════════════════════ ALERTS ═════════════════════════════
+alertcondition(bosUp or chochUp, "Bullish structure break (BOS/CHoCH)", "Jev SMC: bullish structure break on {{ticker}} {{interval}}")
+alertcondition(bosDn or chochDn, "Bearish structure break (BOS/CHoCH)", "Jev SMC: bearish structure break on {{ticker}} {{interval}}")
+alertcondition(chochUp or chochDn, "CHoCH (change of character)", "Jev SMC: CHoCH on {{ticker}} {{interval}}")
+alertcondition(sweepLo, "Sell-side liquidity sweep (bullish)", "Jev SMC: lows swept on {{ticker}} {{interval}}")
+alertcondition(sweepHi, "Buy-side liquidity sweep (bearish)", "Jev SMC: highs swept on {{ticker}} {{interval}}")
+alertcondition(setupLong, "A+ LONG setup", "Jev SMC: A+ LONG setup on {{ticker}} {{interval}}")
+alertcondition(setupShort, "A+ SHORT setup", "Jev SMC: A+ SHORT setup on {{ticker}} {{interval}}")
