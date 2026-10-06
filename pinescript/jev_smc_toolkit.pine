@@ -1,4 +1,4 @@
-//@version=5
+//@version=6
 // ─────────────────────────────────────────────────────────────────────────────
 // Jev SMC Toolkit
 //   1) EMA ribbon (8 EMAs, each toggle-able)      5) Bullish / Bearish FVGs + ★ best FVG to be revisited

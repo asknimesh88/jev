@@ -1,4 +1,4 @@
-# Jev SMC Toolkit (TradingView, Pine v5)
+# Jev SMC Toolkit (TradingView, Pine v6)
 
 1. TradingView → **Pine Editor** → New indicator → paste `jev_smc_toolkit.pine` → **Add to chart**.
 2. Every feature has its own switch in the indicator's **Settings → Inputs** (EMA ribbon per-EMA, BOS, CHoCH, sweeps, order blocks, FVGs, ★ best FVG, VWAP, A+ setups).
