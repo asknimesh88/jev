@@ -226,7 +226,8 @@ f_updFVG(bool hide) =>
                 array.remove(fvImp, i)
                 array.remove(fvTapped, i)
                 array.remove(fvBirth, i)
-            else if bar_index > array.get(fvBirth, i) and (bl ? low <= t : high >= bo)
+            // separate `if` (not `else if`): Pine rejects chains whose branches end in different return types
+            if not filled and bar_index > array.get(fvBirth, i) and (bl ? low <= t : high >= bo)
                 array.set(fvTapped, i, true)
 
 f_obOverlap(bool bull, float bo, float t) =>
