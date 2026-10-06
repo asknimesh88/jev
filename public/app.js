@@ -221,7 +221,7 @@ function ladder(s, price) {
 // ---------- charts
 function drawCharts(s) {
   const el = $("chart"), rel = $("rsichart");
-  if (!window.LightweightCharts) { el.innerHTML = '<p class="mut" style="padding:20px">Chart library failed to load (check network / ad-blocker).</p>'; return; }
+  if (!window.LightweightCharts) { el.innerHTML = '<p class="mut" style="padding:20px">Chart library failed to load. Hard-refresh (Ctrl+Shift+R); if it persists, open /lightweight-charts.js to check it is served.</p>'; return; }
   const L = window.LightweightCharts, off = -new Date().getTimezoneOffset() * 60, C = s.chart.candles, prec = decimals(s.price);
   const base = { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8793a8", fontFamily: "ui-monospace, monospace" },
     grid: { vertLines: { color: "#141c2b" }, horzLines: { color: "#141c2b" } }, rightPriceScale: { borderColor: "#1f2a3d" },
