@@ -8,7 +8,7 @@
 // All structure logic runs on CLOSED bars, so nothing repaints once a bar has closed.
 // Educational tool, not financial advice. The setup score is a confluence score, NOT a win probability.
 // ─────────────────────────────────────────────────────────────────────────────
-indicator("Jev SMC Toolkit", shorttitle="Jev SMC", overlay=true, scale=scale.right, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=500)
+indicator("Jev SMC Toolkit", shorttitle="Jev SMC", overlay=true, max_boxes_count=500, max_lines_count=500, max_labels_count=500, max_bars_back=500)
 
 // ═════════════════════════════ INPUTS ═════════════════════════════
 bullC = input.color(#22d3a0, "Bullish colour", group="Colours")
