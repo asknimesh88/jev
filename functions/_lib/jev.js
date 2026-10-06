@@ -40,6 +40,7 @@ const stateOf = (symbol, s, ctx) => ({
   timeframe: s.tf, price: s.price, rules_engine_direction: s.direction, rules_engine_score: s.score,
   indicators: s.indicators, factor_scores: s.components,
   proposed_plan: { entry: s.plan.entry, entry_type: s.plan.entryType, stop_loss: s.plan.stopLoss, tp1: s.plan.tp1, tp2: s.plan.tp2, rr_tp1: s.plan.rr1 },
+  smart_money: s.smc,
   signals: s.reasons.map((r) => `${r.bias}: ${r.text}`),
   funding_rate_pct: ctx.derivatives?.funding != null ? ctx.derivatives.funding * 100 : null,
   long_short_ratio: ctx.derivatives?.longShort ?? null,

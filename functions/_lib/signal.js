@@ -1,5 +1,6 @@
 // Jev signal engine: multi-factor confluence → direction, confidence, and a trade plan (entry / TP / SL),
 // plus an explicit verdict: ENTER NOW, WAIT FOR PULLBACK, MISSED, or NO TRADE.
+import { smc } from "./smc.js";
 import { ema, rsi, atr, macd, bollinger, adx, pivots, sma, last } from "./indicators.js";
 
 const clamp = (x, lo = -1, hi = 1) => Math.max(lo, Math.min(hi, x));
@@ -106,6 +107,13 @@ export function analyzeTimeframe({ tf, candles, htf, derivatives, fearGreed, fun
   const below = lows.map((p) => p.p).filter((p) => p < price).sort((a, b) => b - a);
   const support = below[0] ?? null, resistance = above[0] ?? null;
 
+  // ---- Smart-money context (informational: shown on chart + fed to Jev, not in the rules score)
+  const sm = smc(candles, A);
+  if (sm.lastBreak) pts(`${sm.lastBreak.type} ${sm.lastBreak.dir === "bull" ? "bullish" : "bearish"} (structure now ${sm.bias})`, sm.lastBreak.dir === "bull" ? 1 : -1);
+  if (sm.lastSweep && sm.recentSweepBars <= 12) pts(`Liquidity ${sm.lastSweep.side === "ssl" ? "below lows swept → bullish rejection" : "above highs swept → bearish rejection"} ${sm.recentSweepBars} bars ago`, sm.lastSweep.side === "ssl" ? 1 : -1);
+  const obNear = sm.obs.filter((o) => o.dir === (dir === "LONG" ? "bull" : "bear")).map((o) => (o.dir === "bull" ? price - o.hi : o.lo - price)).filter((d) => d > -A).sort((a, b) => a - b)[0];
+  if (obNear != null) pts(`Nearest ${dir === "LONG" ? "demand" : "supply"} order block ${(Math.max(obNear, 0) / A).toFixed(1)} ATR away`, dir === "LONG" ? 1 : -1);
+
   // Ideal entry: pullback to EMA20 in trend direction; if price is already there, enter at market.
   const pullback = s.ema20;
   const ext = ((price - pullback) / A) * sign; // ATRs the move is extended beyond the pullback level
@@ -169,7 +177,8 @@ export function analyzeTimeframe({ tf, candles, htf, derivatives, fearGreed, fun
       ...dedupe(below, 0.3 * A).slice(0, 3).map((p) => ({ price: round(p), type: "support" })),
     ],
     reasons,
-    chart: chartSeries(candles, s),
+    smc: { bias: sm.bias, lastBreak: sm.lastBreak && { type: sm.lastBreak.type, dir: sm.lastBreak.dir }, recentSweep: sm.recentSweepBars != null && sm.recentSweepBars <= 12 ? sm.lastSweep.side : null, obs: sm.obs.length },
+    chart: { ...chartSeries(candles, s), smc: sm },
   };
 }
 

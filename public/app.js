@@ -28,7 +28,7 @@ const DEFAULTS = { bal: 1000, risk: 1, lev: 10, refresh: 60, watch: "BTCUSDT,SOL
 let S = store.get("jev.settings", DEFAULTS);
 let cache = store.get("jev.cache", {});          // symbol → {t, price, change24h, v15:{verdict,direction,prob}, v1h:{...}}
 let current = null, activeTf = "15m", timer = null, view = "dash", charts = null;
-const ov = store.get("jev.overlays", { ema: true, bb: false, sr: true, vol: true });
+const ov = store.get("jev.overlays", { ema: true, bb: false, sr: true, vol: true, smc: true });
 const watchList = () => S.watch.split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
 
 // ---------- navigation
@@ -159,9 +159,10 @@ function renderCenter(d) {
         <div><small>4H TREND</small><b class="${h4.trend > 0.35 ? "up" : h4.trend < -0.35 ? "dn" : "mut"}">${trendLabel(h4.trend)}</b></div>
         <div><small>PHASE</small><b>${phase.toUpperCase()}</b></div>
       </div>
-      <div class="ovl" id="ovl">${[["ema", "EMA"], ["bb", "Bands"], ["sr", "S/R"], ["vol", "Volume"]].map(([k, n]) => `<button data-k="${k}" class="${ov[k] ? "on" : ""}">${n}</button>`).join("")}</div>
+      <div class="ovl" id="ovl">${[["smc", "SMC"], ["ema", "EMA"], ["bb", "Bands"], ["sr", "S/R"], ["vol", "Volume"]].map(([k, n]) => `<button data-k="${k}" class="${ov[k] ? "on" : ""}">${n}</button>`).join("")}</div>
     </div>
-    <div id="chart"></div>
+    ${ov.smc ? `<div class="legend"><span><i class="sw" style="--c:#22d3a0"></i>Demand OB</span><span><i class="sw" style="--c:#ff5c75"></i>Supply OB</span><span><i class="ln"></i>BOS</span><span><i class="ln ch"></i>CHoCH</span><span class="yl">◆ Liquidity sweep</span><span><i class="ln dot"></i>EQH / EQL pool</span></div>` : ""}
+    <div class="cw"><div id="chart"></div><canvas id="smccv"></canvas></div>
     <div style="position:relative"><span class="rsilbl" style="top:6px">RSI 14</span><div id="rsichart"></div></div>
   </div>
 
@@ -218,6 +219,48 @@ function ladder(s, price) {
   return items.sort((a, b) => b.price - a.price).map((x) => `<div class="lad ${x.c}"><span class="t">${x.t}</span><span>${fmt(x.price)}</span><span class="d">${x.c === "px" ? "" : pct(((x.price - price) / price) * 100, 2)}</span></div>`).join("");
 }
 
+// ---------- smart-money overlay (canvas on top of the chart: order blocks, BOS/CHoCH, sweeps, EQH/EQL)
+let smcRaf = 0;
+function startSmc(ch, cs, sm, C, off) {
+  const cv = $("smccv"); if (!cv || !sm) return;
+  const ctx = cv.getContext("2d"), ts = ch.timeScale(), last = C.length - 1;
+  const X = (i) => ts.timeToCoordinate(C[Math.max(0, Math.min(i, last))].t + off), Y = (p) => cs.priceToCoordinate(p);
+  const UP = "#22d3a0", DN = "#ff5c75", AMB = "#ffb547", GRY = "#9fb0cc", YL = "#ffe066";
+  let sig = "";
+  const draw = (w, h, dpr) => {
+    cv.width = w * dpr; cv.height = h * dpr; ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    if (!ov.smc) return;
+    const xr = ts.width(); ctx.font = "600 10px ui-monospace, monospace"; ctx.textBaseline = "middle";
+    const seg = (x1, x2, y, col, dash, label, above = true) => {
+      ctx.strokeStyle = col; ctx.setLineDash(dash); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(x1, y); ctx.lineTo(x2, y); ctx.stroke(); ctx.setLineDash([]);
+      if (label) { ctx.fillStyle = col; ctx.textAlign = "center"; ctx.fillText(label, (x1 + x2) / 2, y + (above ? -8 : 8)); }
+    };
+    sm.obs.forEach((o) => {
+      const y1 = Y(o.hi), y2 = Y(o.lo); if (y1 == null || y2 == null) return;
+      const x1 = X(o.i) ?? 0, col = o.dir === "bull" ? UP : DN;
+      ctx.fillStyle = col + "26"; ctx.fillRect(x1, y1, xr - x1, y2 - y1);
+      ctx.strokeStyle = col + "99"; ctx.lineWidth = 1; ctx.strokeRect(x1, y1, xr - x1, y2 - y1);
+      ctx.fillStyle = col; ctx.textAlign = "left"; ctx.fillText(o.dir === "bull" ? "OB demand" : "OB supply", x1 + 5, y1 + 9);
+    });
+    sm.pools.forEach((p) => { const y = Y(p.level); if (y == null) return; seg(X(p.from) ?? 0, xr, y, YL + "aa", [2, 4], null); ctx.fillStyle = YL; ctx.textAlign = "right"; ctx.fillText(p.side, xr - 4, y + (p.side === "EQH" ? -8 : 8)); });
+    sm.breaks.forEach((b) => { const y = Y(b.level); if (y == null) return; seg(X(b.from) ?? 0, X(b.i) ?? xr, y, b.type === "CHoCH" ? AMB : GRY, [6, 4], b.type, b.dir === "bull"); });
+    sm.sweeps.forEach((q) => {
+      const y = Y(q.level), x = X(q.i); if (y == null || x == null) return;
+      seg(X(q.from) ?? 0, x, y, YL + "88", [2, 3], null);
+      ctx.fillStyle = YL; ctx.beginPath(); ctx.moveTo(x, y - 5); ctx.lineTo(x + 5, y); ctx.lineTo(x, y + 5); ctx.lineTo(x - 5, y); ctx.fill();
+      ctx.textAlign = "center"; ctx.fillText("SWEEP", x, y + (q.side === "bsl" ? -13 : 13));
+    });
+  };
+  const frame = () => {
+    if (!cv.isConnected) return;
+    const w = cv.parentElement.clientWidth, h = cv.parentElement.clientHeight, dpr = window.devicePixelRatio || 1;
+    const now = [w, h, X(0), X(last), Y(C[last].c), Y(C[0].c), ov.smc].join("|");
+    if (now !== sig) { sig = now; draw(w, h, dpr); }
+    smcRaf = requestAnimationFrame(frame);
+  };
+  frame();
+}
+
 // ---------- charts
 function drawCharts(s) {
   const el = $("chart"), rel = $("rsichart");
@@ -226,6 +269,8 @@ function drawCharts(s) {
   const base = { autoSize: true, layout: { background: { color: "transparent" }, textColor: "#8793a8", fontFamily: "ui-monospace, monospace" },
     grid: { vertLines: { color: "#141c2b" }, horzLines: { color: "#141c2b" } }, rightPriceScale: { borderColor: "#1f2a3d" },
     timeScale: { borderColor: "#1f2a3d", timeVisible: true, secondsVisible: false }, crosshair: { mode: 0 } };
+  cancelAnimationFrame(smcRaf);
+  if (charts) { try { charts.ch.remove(); charts.rc.remove(); } catch {} }
   const ch = L.createChart(el, base), rc = L.createChart(rel, { ...base, timeScale: { ...base.timeScale, visible: false } });
   const fmtP = { type: "price", precision: prec, minMove: Math.pow(10, -prec) };
   const cs = ch.addCandlestickSeries({ upColor: "#22d3a0", downColor: "#ff5c75", borderVisible: false, wickUpColor: "#22d3a0", wickDownColor: "#ff5c75", priceFormat: fmtP });
@@ -251,6 +296,7 @@ function drawCharts(s) {
   ch.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rc.timeScale().setVisibleLogicalRange(r));
   rc.timeScale().setVisibleLogicalRange(ch.timeScale().getVisibleLogicalRange() || { from: 0, to: C.length });
   charts = { ch, rc };
+  startSmc(ch, cs, s.chart.smc, C, off);
 }
 
 // ---------- RIGHT panel (signal, Jev, scenarios, levels, sizing)
