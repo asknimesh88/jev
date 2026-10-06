@@ -166,6 +166,8 @@ function renderCenter(d) {
     <div style="position:relative"><span class="rsilbl" style="top:6px">RSI 14</span><div id="rsichart"></div></div>
   </div>
 
+  <div id="right" class="mt"></div>
+
   <div class="grid g2 mt">
     <div class="card"><h3>Jev briefing <span class="tag">${d.narrative?.by === "claude" ? "AI" : "rules"}</span></h3><div class="brief">${esc(d.narrative?.text)}</div></div>
     <div class="card"><h3>Multi-timeframe trend</h3><div class="mtf">${d.mtf.map((m) => `
@@ -328,36 +330,41 @@ function renderRight(d) {
   const maxLev = Math.max(1, Math.floor(1 / ((dist / p.entry) * 1.3 + MMR)));
 
   $("right").innerHTML = `
-    <div class="rhead"><span>JEV ANALYSIS · ${esc(d.symbol)}</span><span class="sdot ${d.jevActive ? "on" : "off"}"></span></div>
-    <div class="minis">${d.signals.map((x) => { const vi = vinfo(x); return `<button class="mini ${x.tf === activeTf ? "on" : ""}" data-tf="${x.tf}"><small>${x.tf}</small><b class="${vi.cls === "go-long" ? "up" : vi.cls === "go-short" ? "dn" : vi.cls === "wait" ? "warn" : "mut"}">${vi.short}${isLive(x) ? " · " + x.direction : ""}</b></button>`; }).join("")}</div>
-    <div class="hero ${v.cls}"><small>${s.tf} SIGNAL</small><div class="hv">${v.label}</div><div class="hd">${esc(dirTxt)}</div><div class="hn">${esc(s.note)}</div></div>
-    <div class="cdcard"><small>${s.tf} CANDLE CLOSES IN</small><div class="cd" id="cd">--:--</div><p>${live ? "Plan is re-evaluated at every close." : "Next decision point."}</p></div>
-    <div class="card" style="padding:14px">${jevBlock}</div>
-
-    <div class="sec">TRADE SCENARIOS</div>
-    <div class="scn"><h4><span>${live ? "Primary plan" : "Current stance"}</span><span class="tag">${live ? s.direction : "FLAT"}</span></h4>${prim}</div>
-    <div class="scn alt"><h4><span>If it goes wrong</span></h4>${alt}</div>
-
-    <div class="lvl e ${live ? "" : "off"}" data-copy="${p.entry}"><div class="ic">◎</div><div><small>Entry · ${p.entryType.toLowerCase()}</small><b>${fmt(p.entry)}</b></div><em>${live ? (p.entryType === "LIMIT" ? "wait for fill" : "now") : "ref only"}</em></div>
-    <div class="lvl s ${live ? "" : "off"}" data-copy="${p.stopLoss}"><div class="ic">✕</div><div><small>Stop loss</small><b>${fmt(p.stopLoss)}</b></div><em>−${p.riskPct}%</em></div>
-    <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp1}"><div class="ic">✓</div><div><small>Take profit 1</small><b>${fmt(p.tp1)}</b></div><em>${p.rr1}R</em></div>
-    <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp2}"><div class="ic">✓✓</div><div><small>Take profit 2</small><b>${fmt(p.tp2)}</b></div><em>${p.rr2}R</em></div>
-    <div class="rr ${live ? "" : "off"}"><div class="a" style="width:${rrw(1)}%">RISK</div><div class="b" style="width:${rrw(p.rr1)}%">TP1 ${p.rr1}R</div><div class="c" style="width:${rrw(p.rr2 - p.rr1)}%">TP2 ${p.rr2}R</div></div>
-    ${live ? `<div class="mut" style="font-size:11.5px">⚑ ${esc(p.invalidation)}</div>` : ""}
-
-    <div class="sec">PERP POSITION SIZING</div>
-    <div class="card" style="padding:14px"><div class="calc ${live ? "" : "off"}">
-      <span>Risk (${S.risk}% of $${fmt(S.bal)})</span><span>$${(bal * risk).toFixed(2)}</span>
-      <span>Position size</span><span>${qty.toPrecision(4)} (${big(notional)})</span>
-      <span>Margin @ ${lev}x</span><span class="${margin > bal ? "dn" : ""}">$${margin.toFixed(2)}</span>
-      <span>Est. liquidation</span><span class="${safe ? "" : "dn"}">${fmt(+liq.toPrecision(6))}</span>
-      <span>Max safe leverage</span><span>${maxLev}x</span></div>
-      ${safe ? "" : `<div class="dn" style="font-size:12px;margin-top:8px">⚠ Liquidation would hit before your stop. Use ≤ ${maxLev}x.</div>`}
-      <div class="mut" style="font-size:11px;margin-top:8px">Edit account / risk / leverage in Settings.</div></div>
-
-    <div class="sec">FACTOR SCORES · ${s.tf}</div>
-    <div class="card" style="padding:14px"><div class="comp">${compBars(s.components)}</div></div>
-    <button class="btn2" id="tg">✈ Send plan to Telegram</button>`;
+    <div class="plan">
+      <div class="plan-bar"><div class="minis">${d.signals.map((x) => { const vi = vinfo(x); return `<button class="mini ${x.tf === activeTf ? "on" : ""}" data-tf="${x.tf}"><small>${x.tf}</small><b class="${vi.cls === "go-long" ? "up" : vi.cls === "go-short" ? "dn" : vi.cls === "wait" ? "warn" : "mut"}">${vi.short}${isLive(x) ? " · " + x.direction : ""}</b></button>`; }).join("")}</div>
+        <span class="rtitle">TRADE PLAN · ${esc(d.symbol)} ${s.tf}</span><button class="btn2" id="tg">✈ Send to Telegram</button></div>
+      <div class="plan-main">
+        <div class="hero ${v.cls}"><small>${s.tf} SIGNAL</small><div class="hv">${v.label}</div><div class="hd">${esc(dirTxt)}</div><div class="hn">${esc(s.note)}</div></div>
+        <div class="plan-lv">
+          <div class="lv4">
+            <div class="lvl e ${live ? "" : "off"}" data-copy="${p.entry}"><div class="ic">◎</div><div><small>Entry</small><b>${fmt(p.entry)}</b><em>${live ? (p.entryType === "LIMIT" ? "limit · wait for fill" : "market · now") : "ref only"}</em></div></div>
+            <div class="lvl s ${live ? "" : "off"}" data-copy="${p.stopLoss}"><div class="ic">✕</div><div><small>Stop loss</small><b>${fmt(p.stopLoss)}</b><em>−${p.riskPct}%</em></div></div>
+            <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp1}"><div class="ic">✓</div><div><small>TP 1</small><b>${fmt(p.tp1)}</b><em>${p.rr1}R</em></div></div>
+            <div class="lvl t ${live ? "" : "off"}" data-copy="${p.tp2}"><div class="ic">✓✓</div><div><small>TP 2</small><b>${fmt(p.tp2)}</b><em>${p.rr2}R</em></div></div>
+          </div>
+          <div class="rr ${live ? "" : "off"}"><div class="a" style="width:${rrw(1)}%">RISK</div><div class="b" style="width:${rrw(p.rr1)}%">TP1 ${p.rr1}R</div><div class="c" style="width:${rrw(p.rr2 - p.rr1)}%">TP2 ${p.rr2}R</div></div>
+          ${live ? `<div class="mut" style="font-size:11.5px">⚑ ${esc(p.invalidation)}</div>` : ""}
+        </div>
+        <div class="plan-side">
+          <div class="cdcard"><small>${s.tf} CANDLE CLOSES IN</small><div class="cd" id="cd">--:--</div><p>${live ? "Re-evaluated at every close." : "Next decision point."}</p></div>
+          <div class="card" style="padding:12px">${jevBlock}</div>
+        </div>
+      </div>
+      <div class="grid g3 mt">
+        <div class="card"><h3>Trade scenarios</h3>
+          <div class="scn"><h4><span>${live ? "Primary plan" : "Current stance"}</span><span class="tag">${live ? s.direction : "FLAT"}</span></h4>${prim}</div>
+          <div class="scn alt" style="margin-top:10px"><h4><span>If it goes wrong</span></h4>${alt}</div></div>
+        <div class="card"><h3>Perp position sizing</h3><div class="calc ${live ? "" : "off"}">
+          <span>Risk (${S.risk}% of $${fmt(S.bal)})</span><span>$${(bal * risk).toFixed(2)}</span>
+          <span>Position size</span><span>${qty.toPrecision(4)} (${big(notional)})</span>
+          <span>Margin @ ${lev}x</span><span class="${margin > bal ? "dn" : ""}">$${margin.toFixed(2)}</span>
+          <span>Est. liquidation</span><span class="${safe ? "" : "dn"}">${fmt(+liq.toPrecision(6))}</span>
+          <span>Max safe leverage</span><span>${maxLev}x</span></div>
+          ${safe ? "" : `<div class="dn" style="font-size:12px;margin-top:8px">⚠ Liquidation would hit before your stop. Use ≤ ${maxLev}x.</div>`}
+          <div class="mut" style="font-size:11px;margin-top:8px">Edit account / risk / leverage in Settings.</div></div>
+        <div class="card"><h3>Factor scores · ${s.tf}</h3><div class="comp">${compBars(s.components)}</div></div>
+      </div>
+    </div>`;
   document.querySelectorAll(".mini").forEach((b) => (b.onclick = () => setTf(b.dataset.tf)));
   document.querySelectorAll(".lvl").forEach((b) => (b.onclick = () => { navigator.clipboard?.writeText(b.dataset.copy); toast("Copied " + b.dataset.copy); }));
   $("tg").onclick = async () => {
@@ -426,4 +433,3 @@ function renderSettings() {
 
 // ---------- boot
 renderWatch();
-$("right").innerHTML = `<div class="rhead"><span>JEV ANALYSIS</span><span class="sdot"></span></div><p class="placeholder">Run an analysis to see the signal, probability, trade plan and sizing here.</p>`;
