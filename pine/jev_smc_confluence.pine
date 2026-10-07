@@ -307,32 +307,74 @@ var int lastSigBar = na
 longSig  = barstate.isconfirmed and longOK and (lastDir != 1 or bar_index - lastSigBar > cooldown)
 shortSig = barstate.isconfirmed and shortOK and not longSig and (lastDir != -1 or bar_index - lastSigBar > cooldown)
 
+// Trade plan drawn AT its prices: red box = risk (entry→SL), green box = reward (entry→TP2), TP1 line,
+// price tags on the right edge. The live plan extends bar by bar until SL or TP2 is touched (max 60 bars).
+var array<box> planBoxes = array.new<box>()
 var array<line> planLines = array.new<line>()
-drawPlan(float e, float sl, float t1, float t2) =>
+var array<label> planTags = array.new<label>()
+var bool planLive = false
+var int pDir = 0
+var int pBar = na
+var float pSL = na
+var float pT2 = na
+
+if planLive
+    for b in planBoxes
+        b.set_right(bar_index + 1)
     for l in planLines
-        l.delete()
+        l.set_x2(bar_index + 1)
+    for t in planTags
+        t.set_x(bar_index + 1)
+    hit = pDir == 1 ? (low <= pSL or high >= pT2) : (high >= pSL or low <= pT2)
+    if hit or bar_index - pBar >= 60
+        planLive := false
+
+tag(float y, string txt, color c) =>
+    planTags.push(label.new(bar_index + 1, y, txt + " " + fmt(y), style = label.style_label_left, color = color.new(c, 20), textcolor = color.white, size = size.tiny))
+
+drawPlan(float e, float sl, float t1, float t2, string kind) =>
+    // previous plan stays on the chart, frozen where it ended
+    planBoxes.clear()
     planLines.clear()
-    planLines.push(line.new(bar_index, e, bar_index + 20, e, color = color.gray))
-    planLines.push(line.new(bar_index, sl, bar_index + 20, sl, color = cBear, style = line.style_dashed))
-    planLines.push(line.new(bar_index, t1, bar_index + 20, t1, color = cBull, style = line.style_dashed))
-    planLines.push(line.new(bar_index, t2, bar_index + 20, t2, color = cBull))
+    planTags.clear()
+    planBoxes.push(box.new(bar_index, math.max(e, sl), bar_index + 1, math.min(e, sl), border_color = color.new(cBear, 60), bgcolor = color.new(cBear, 85)))
+    planBoxes.push(box.new(bar_index, math.max(e, t2), bar_index + 1, math.min(e, t2), border_color = color.new(cBull, 60), bgcolor = color.new(cBull, 85)))
+    planLines.push(line.new(bar_index, e, bar_index + 1, e, color = color.gray, width = 2))
+    planLines.push(line.new(bar_index, t1, bar_index + 1, t1, color = cBull, style = line.style_dashed))
+    tag(e, "Entry " + kind, color.gray)
+    tag(sl, "SL", cBear)
+    tag(t1, "TP1", cBull)
+    tag(t2, "TP2", cBull)
 
 alertJson(string side, float e, float sl, float t1, float t2, int pass) =>
     '{"source":"jev-pine","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","side":"' + side + '","entry":' + fmt(e) + ',"sl":' + fmt(sl) + ',"tp1":' + fmt(t1) + ',"tp2":' + fmt(t2) + ',"score":' + str.tostring(score, "#.###") + ',"checks":' + str.tostring(pass) + '}'
+
+details(int pass, float e, string kind, float sl, float t1, float t2) =>
+    str.tostring(pass) + "/9 checks · score " + str.tostring(score, "#.##") + "\nEntry " + fmt(e) + " " + kind + "\nSL " + fmt(sl) + "\nTP1 " + fmt(t1) + "\nTP2 " + fmt(t2)
 
 if longSig
     lastDir := 1
     lastSigBar := bar_index
     kind = extL <= 0.35 ? "MKT" : "LIMIT"
-    label.new(bar_index, low, "BUY " + str.tostring(passL) + "/9\nScore " + str.tostring(score, "#.##") + "\nEntry " + fmt(eL) + " " + kind + "\nSL " + fmt(slL) + "\nTP1 " + fmt(t1L) + "\nTP2 " + fmt(t2L), yloc = yloc.belowbar, style = label.style_label_up, color = cBull, textcolor = color.white, size = size.small)
-    drawPlan(eL, slL, t1L, t2L)
+    label.new(bar_index, low, "BUY", yloc = yloc.belowbar, style = label.style_label_up, color = cBull, textcolor = color.white, size = size.tiny, tooltip = details(passL, eL, kind, slL, t1L, t2L))
+    drawPlan(eL, slL, t1L, t2L, kind)
+    planLive := true
+    pDir := 1
+    pBar := bar_index
+    pSL := slL
+    pT2 := t2L
     alert(alertJson("LONG", eL, slL, t1L, t2L, passL), alert.freq_once_per_bar_close)
 if shortSig
     lastDir := -1
     lastSigBar := bar_index
     kind = extS <= 0.35 ? "MKT" : "LIMIT"
-    label.new(bar_index, high, "SELL " + str.tostring(passS) + "/9\nScore " + str.tostring(score, "#.##") + "\nEntry " + fmt(eS) + " " + kind + "\nSL " + fmt(slS) + "\nTP1 " + fmt(t1S) + "\nTP2 " + fmt(t2S), yloc = yloc.abovebar, style = label.style_label_down, color = cBear, textcolor = color.white, size = size.small)
-    drawPlan(eS, slS, t1S, t2S)
+    label.new(bar_index, high, "SELL", yloc = yloc.abovebar, style = label.style_label_down, color = cBear, textcolor = color.white, size = size.tiny, tooltip = details(passS, eS, kind, slS, t1S, t2S))
+    drawPlan(eS, slS, t1S, t2S, kind)
+    planLive := true
+    pDir := -1
+    pBar := bar_index
+    pSL := slS
+    pT2 := t2S
     alert(alertJson("SHORT", eS, slS, t1S, t2S, passS), alert.freq_once_per_bar_close)
 
 alertcondition(longSig, "Jev BUY", "Jev BUY on {{ticker}} {{interval}} @ {{close}}")
