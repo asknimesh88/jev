@@ -1,0 +1,374 @@
+// This Pine Script® code is subject to the terms of the Mozilla Public License 2.0
+// Jev SMC Confluence — TradingView port of the Jev rules engine (functions/_lib/signal.js + smc.js)
+// plus a checklist gate. A BUY/SELL prints only when the confluence score, POI reaction and room-to-target
+// all pass AND enough checklist items agree. Confluence ≠ win probability. Not financial advice.
+//@version=6
+indicator("Jev SMC Confluence", overlay = true, max_boxes_count = 500, max_lines_count = 300, max_labels_count = 300, max_bars_back = 500)
+
+// ───────────────────────── Inputs
+grpS = "Signal checklist"
+minScore = input.float(0.30, "Min |confluence score|", minval = 0.1, maxval = 1, step = 0.05, group = grpS, tooltip = "Jev weighted score in [-1,1]. Jev itself vetoes below 0.20.")
+minPass  = input.int(8, "Min checklist items passed (of 9)", minval = 5, maxval = 9, group = grpS)
+minRR    = input.float(1.5, "Min room to next S/R (R multiples)", minval = 1.2, step = 0.1, group = grpS, tooltip = "Jev vetoes below 1.2R.")
+poiBars  = input.int(8, "POI reaction window (bars)", minval = 1, group = grpS, tooltip = "Price must have tapped a live OB/FVG within this many bars.")
+cooldown = input.int(10, "Bars before a repeat same-side signal", minval = 1, group = grpS)
+htfA     = input.timeframe("60", "Higher timeframe 1", group = grpS)
+htfB     = input.timeframe("240", "Higher timeframe 2", group = grpS)
+
+grpM = "Smart money"
+swingLen = input.int(5, "Swing length (BOS/CHoCH, S/R)", minval = 2, group = grpM, tooltip = "Jev dashboard uses 3; 5 is cleaner on TradingView.")
+showStruct = input.bool(true, "Show BOS / CHoCH", group = grpM)
+obKeep   = input.int(3, "Order blocks per side", minval = 0, maxval = 10, group = grpM)
+fvgKeep  = input.int(3, "Strongest FVGs per side", minval = 0, maxval = 10, group = grpM)
+fvgMin   = input.float(0.3, "FVG min gap (× ATR)", minval = 0, step = 0.05, group = grpM)
+fvgDisp  = input.float(0.8, "FVG min displacement body (× ATR)", minval = 0, step = 0.1, group = grpM)
+fvgWick  = input.bool(false, "FVG invalid on wick fill (default: on close beyond)", group = grpM)
+
+grpV = "Display"
+showEma   = input.bool(true, "Show EMA 20/50/200", group = grpV)
+showTable = input.bool(true, "Show checklist table", group = grpV)
+cBull = input.color(color.new(#26a69a, 0), "Bull colour", group = grpV)
+cBear = input.color(color.new(#ef5350, 0), "Bear colour", group = grpV)
+
+// ───────────────────────── Helpers
+clip(x, lo, hi) => math.max(lo, math.min(hi, x))
+
+// Jev trendOf(): EMA stack weighted by ADX
+trendScore() =>
+    e20 = ta.ema(close, 20)
+    e50 = ta.ema(close, 50)
+    e200 = nz(ta.ema(close, 200), e50)
+    [dip, dim, adxV] = ta.dmi(14, 14)
+    stack = ((close > e20 ? 1 : 0) + (e20 > e50 ? 1 : 0) + (e50 > e200 ? 1 : 0) - 1.5) / 1.5
+    clip(stack * (0.55 + 0.45 * math.min(nz(adxV, 15) / 30, 1)), -1, 1)
+
+nearestAbove(array<float> a, float p) =>
+    float r = na
+    for v in a
+        if v > p and (na(r) or v < r)
+            r := v
+    r
+
+nearestBelow(array<float> a, float p) =>
+    float r = na
+    for v in a
+        if v < p and (na(r) or v > r)
+            r := v
+    r
+
+// Extend live zones, delete invalidated ones; returns true if price tapped a live zone this bar.
+updateZones(array<box> zs, array<float> st, bool bull, bool wickMode) =>
+    bool touched = false
+    if zs.size() > 0
+        for i = zs.size() - 1 to 0
+            b = zs.get(i)
+            top = b.get_top()
+            bot = b.get_bottom()
+            dead = bull ? (wickMode ? low < bot : close < bot) : (wickMode ? high > top : close > top)
+            if dead
+                b.delete()
+                zs.remove(i)
+                st.remove(i)
+            else
+                b.set_right(bar_index)
+                if bull ? (low <= top and close > bot) : (high >= bot and close < top)
+                    touched := true
+    touched
+
+// Keep only the `keep` highest-strength zones (strength = bar_index gives "most recent").
+addZone(array<box> zs, array<float> st, int left, float top, float bot, float s, int keep, color c, string txt) =>
+    if keep > 0 and (zs.size() < keep or s > st.min())
+        if zs.size() >= keep
+            idx = st.indexof(st.min())
+            zs.get(idx).delete()
+            zs.remove(idx)
+            st.remove(idx)
+        zs.push(box.new(left, top, bar_index, bot, border_color = color.new(c, 40), bgcolor = color.new(c, 82), text = txt, text_color = color.new(c, 0), text_size = size.tiny, text_halign = text.align_right))
+        st.push(s)
+
+fmt(x) => str.tostring(x, format.mintick)
+
+// ───────────────────────── Technicals (Jev factors)
+atr = ta.atr(14)
+ema20 = ta.ema(close, 20)
+ema50 = ta.ema(close, 50)
+ema200 = nz(ta.ema(close, 200), ema50)
+rsi = ta.rsi(close, 14)
+[macdL, macdS, hist] = ta.macd(close, 12, 26, 9)
+[pdi, mdi, adx] = ta.dmi(14, 14)
+[bbMid, bbUp, bbLo] = ta.bb(close, 20, 2)
+volSma = ta.sma(volume, 20)
+volRatio = volSma > 0 ? volume / volSma : 1.0
+
+trendS = trendScore()
+momentum = 0.5 * clip((rsi - 50) / 25, -1, 1) + 0.5 * clip(hist / atr * 4, -1, 1)
+htf1 = request.security(syminfo.tickerid, htfA, trendS[1], lookahead = barmerge.lookahead_on)
+htf2 = request.security(syminfo.tickerid, htfB, trendS[1], lookahead = barmerge.lookahead_on)
+htf = (nz(htf1) + nz(htf2)) / 2
+
+hi20 = ta.highest(high, 20)[1]
+lo20 = ta.lowest(low, 20)[1]
+structure = close > hi20 ? clip(0.5 + (volRatio - 1) * 0.5, 0.3, 1) : close < lo20 ? -clip(0.5 + (volRatio - 1) * 0.5, 0.3, 1) : clip((close - bbMid) / (bbUp - bbMid) * 0.4, -1, 1)
+
+// ───────────────────────── Fundamentals
+// Stocks: TradingView financials. Crypto: market-wide proxies (TOTAL cap trend, USDT.D risk-off, BTC.D for alts).
+// Everything else: 30-day performance only (same as Jev's change30d term).
+isCrypto = syminfo.type == "crypto"
+isStock  = syminfo.type == "stock"
+isBTC    = syminfo.basecurrency == "BTC"
+chg30 = request.security(syminfo.tickerid, "D", close[1] / close[31] - 1, lookahead = barmerge.lookahead_on)
+totT  = request.security("CRYPTOCAP:TOTAL", "D", close[1] > ta.ema(close, 50)[1] ? 1.0 : -1.0, lookahead = barmerge.lookahead_on)
+usdtT = request.security("CRYPTOCAP:USDT.D", "D", close[1] > ta.ema(close, 20)[1] ? 1.0 : -1.0, lookahead = barmerge.lookahead_on)
+btcT  = request.security("CRYPTOCAP:BTC.D", "D", close[1] > ta.ema(close, 20)[1] ? 1.0 : -1.0, lookahead = barmerge.lookahead_on)
+eps = request.financial(syminfo.tickerid, "EARNINGS_PER_SHARE_BASIC", "FY", ignore_invalid_symbol = true)
+rev = request.financial(syminfo.tickerid, "TOTAL_REVENUE", "FY", ignore_invalid_symbol = true)
+roe = request.financial(syminfo.tickerid, "RETURN_ON_EQUITY", "FY", ignore_invalid_symbol = true)
+de  = request.financial(syminfo.tickerid, "DEBT_TO_EQUITY", "FY", ignore_invalid_symbol = true)
+fcf = request.financial(syminfo.tickerid, "FREE_CASH_FLOW", "FY", ignore_invalid_symbol = true)
+epsPrev = ta.valuewhen(not na(eps[1]) and eps != eps[1], eps[1], 0)
+revPrev = ta.valuewhen(not na(rev[1]) and rev != rev[1], rev[1], 0)
+
+float fund = clip(nz(chg30) * 100 / 40, -0.4, 0.4)
+if isCrypto
+    fund += 0.25 * nz(totT) - 0.25 * nz(usdtT) - (isBTC ? 0.0 : 0.15 * nz(btcT))
+else if isStock
+    fund += eps > epsPrev ? 0.2 : eps < epsPrev ? -0.2 : 0.0
+    fund += rev > revPrev ? 0.2 : rev < revPrev ? -0.2 : 0.0
+    fund += roe > 15 ? 0.15 : roe < 0 ? -0.15 : 0.0
+    fund += de > 2 ? -0.15 : 0.0
+    fund += fcf > 0 ? 0.1 : fcf < 0 ? -0.1 : 0.0
+fund := clip(fund, -1, 1)
+fundSrc = isCrypto ? "crypto macro" : isStock ? (na(eps) ? "stock (no data)" : "financials") : "30d perf"
+
+// ───────────────────────── Market structure: BOS / CHoCH + order blocks
+ph = ta.pivothigh(high, swingLen, swingLen)
+pl = ta.pivotlow(low, swingLen, swingLen)
+var array<float> pHighs = array.new<float>()
+var array<float> pLows = array.new<float>()
+var float shP = na
+var int shI = na
+var bool shUsed = true
+var float slP = na
+var int slI = na
+var bool slUsed = true
+var int smcTrend = 0
+
+if not na(ph)
+    shP := ph
+    shI := bar_index - swingLen
+    shUsed := false
+    pHighs.push(ph)
+    if pHighs.size() > 20
+        pHighs.shift()
+if not na(pl)
+    slP := pl
+    slI := bar_index - swingLen
+    slUsed := false
+    pLows.push(pl)
+    if pLows.size() > 20
+        pLows.shift()
+
+var array<box> bullOB = array.new<box>()
+var array<float> bullOBs = array.new<float>()
+var array<box> bearOB = array.new<box>()
+var array<float> bearOBs = array.new<float>()
+var array<box> bullF = array.new<box>()
+var array<float> bullFs = array.new<float>()
+var array<box> bearF = array.new<box>()
+var array<float> bearFs = array.new<float>()
+
+// update existing zones first so a zone born this bar can't count as "tapped"
+tBullOB = updateZones(bullOB, bullOBs, true, false)
+tBearOB = updateZones(bearOB, bearOBs, false, false)
+tBullF  = updateZones(bullF, bullFs, true, fvgWick)
+tBearF  = updateZones(bearF, bearFs, false, fvgWick)
+
+drawBreak(int fromI, float lvl, bool bull, bool choch) =>
+    if showStruct
+        c = bull ? cBull : cBear
+        line.new(fromI, lvl, bar_index, lvl, color = c, style = choch ? line.style_solid : line.style_dashed)
+        label.new(math.round((fromI + bar_index) / 2), lvl, choch ? "CHoCH" : "BOS", style = bull ? label.style_label_down : label.style_label_up, color = color.new(c, 100), textcolor = c, size = size.small)
+
+if not shUsed and close > shP
+    choch = smcTrend == -1
+    shUsed := true
+    smcTrend := 1
+    drawBreak(shI, shP, true, choch)
+    // OB = lowest bearish candle between the leg origin (last swing low) and the break
+    span = math.min(bar_index - (na(slI) ? shI : slI), 300)
+    float oTop = na
+    float oBot = na
+    int oI = na
+    if span >= 1
+        for k = 1 to span
+            if close[k] < open[k] and (na(oBot) or low[k] < oBot)
+                oBot := low[k]
+                oTop := high[k]
+                oI := bar_index - k
+    if not na(oI)
+        addZone(bullOB, bullOBs, oI, oTop, oBot, bar_index, obKeep, cBull, "Bull OB")
+
+if not slUsed and close < slP
+    choch = smcTrend == 1
+    slUsed := true
+    smcTrend := -1
+    drawBreak(slI, slP, false, choch)
+    span = math.min(bar_index - (na(shI) ? slI : shI), 300)
+    float oTop = na
+    float oBot = na
+    int oI = na
+    if span >= 1
+        for k = 1 to span
+            if close[k] > open[k] and (na(oTop) or high[k] > oTop)
+                oBot := low[k]
+                oTop := high[k]
+                oI := bar_index - k
+    if not na(oI)
+        addZone(bearOB, bearOBs, oI, oTop, oBot, bar_index, obKeep, cBear, "Bear OB")
+
+// ───────────────────────── Fair value gaps — keep only the strongest
+// strength = gap/ATR × displacement (body/range of the middle candle) × relative volume (capped at 3)
+body1 = math.abs(close[1] - open[1])
+rng1 = high[1] - low[1]
+disp = rng1 > 0 ? body1 / rng1 : 0.0
+volF = volSma[1] > 0 ? math.min(volume[1] / volSma[1], 3) : 1.0
+if low > high[2] and close[1] > open[1] and body1 >= fvgDisp * atr
+    gap = low - high[2]
+    if gap >= fvgMin * atr
+        addZone(bullF, bullFs, bar_index - 2, low, high[2], gap / atr * disp * volF, fvgKeep, cBull, "Bull FVG")
+if high < low[2] and close[1] < open[1] and body1 >= fvgDisp * atr
+    gap = low[2] - high
+    if gap >= fvgMin * atr
+        addZone(bearF, bearFs, bar_index - 2, low[2], high, gap / atr * disp * volF, fvgKeep, cBear, "Bear FVG")
+
+var int lastBullTap = na
+var int lastBearTap = na
+if tBullOB or tBullF
+    lastBullTap := bar_index
+if tBearOB or tBearF
+    lastBearTap := bar_index
+
+// ───────────────────────── Jev score + trade plan
+score = trendS * 0.27 + momentum * 0.20 + htf * 0.25 + structure * 0.10 + smcTrend * 0.12 + fund * 0.06
+
+// Jev plan: entry at market if ≤0.35 ATR from EMA20 else limit at EMA20; stop beyond nearest swing +0.25 ATR
+// (clamped 1–2.5 ATR); TP 1.5R / 2.5R, pulled in front of the next S/R.
+plan(int sgn) =>
+    ext = (close - ema20) / atr * sgn
+    entry = ext <= 0.35 ? close : ema20
+    swing = sgn == 1 ? nearestBelow(pLows, entry) : nearestAbove(pHighs, entry)
+    float risk = na(swing) ? 1.5 * atr : math.abs(entry - swing) + 0.25 * atr
+    risk := clip(risk, atr, 2.5 * atr)
+    obst = sgn == 1 ? nearestAbove(pHighs, close) : nearestBelow(pLows, close)
+    obsR = na(obst) ? 99.0 : math.abs(obst - entry) / risk
+    tp1 = entry + sgn * risk * 1.5
+    tp2 = entry + sgn * risk * 2.5
+    if obsR < 2.5 and obsR >= 1.2
+        tp2 := entry + sgn * math.abs(obst - entry) * 0.98
+        if obsR < 1.5
+            tp1 := entry + sgn * math.abs(obst - entry) * 0.9
+    [entry, entry - sgn * risk, tp1, tp2, obsR, ext]
+
+[eL, slL, t1L, t2L, rrL, extL] = plan(1)
+[eS, slS, t1S, t2S, rrS, extS] = plan(-1)
+
+// ───────────────────────── Checklist
+l1 = score >= minScore
+l2 = htf > 0.25
+l3 = ema20 > ema50 and ema50 > ema200 and adx >= 18
+l4 = rsi > 45 and rsi < 75 and hist > hist[1]
+l5 = smcTrend == 1
+l6 = not na(lastBullTap) and bar_index - lastBullTap <= poiBars and close > open
+l7 = extL <= 1.0
+l8 = rrL >= minRR
+l9 = fund >= 0
+
+s1 = score <= -minScore
+s2 = htf < -0.25
+s3 = ema20 < ema50 and ema50 < ema200 and adx >= 18
+s4 = rsi < 55 and rsi > 25 and hist < hist[1]
+s5 = smcTrend == -1
+s6 = not na(lastBearTap) and bar_index - lastBearTap <= poiBars and close < open
+s7 = extS <= 1.0
+s8 = rrS >= minRR
+s9 = fund <= 0
+
+n(b) => b ? 1 : 0
+passL = n(l1) + n(l2) + n(l3) + n(l4) + n(l5) + n(l6) + n(l7) + n(l8) + n(l9)
+passS = n(s1) + n(s2) + n(s3) + n(s4) + n(s5) + n(s6) + n(s7) + n(s8) + n(s9)
+choppy = adx < 15 and math.abs(trendS) < 0.5   // Jev veto
+
+// score, POI reaction and room are mandatory; the rest count toward minPass
+longOK  = l1 and l6 and l8 and passL >= minPass and not choppy
+shortOK = s1 and s6 and s8 and passS >= minPass and not choppy
+
+var int lastDir = 0
+var int lastSigBar = na
+longSig  = barstate.isconfirmed and longOK and (lastDir != 1 or bar_index - lastSigBar > cooldown)
+shortSig = barstate.isconfirmed and shortOK and not longSig and (lastDir != -1 or bar_index - lastSigBar > cooldown)
+
+var array<line> planLines = array.new<line>()
+drawPlan(float e, float sl, float t1, float t2) =>
+    for l in planLines
+        l.delete()
+    planLines.clear()
+    planLines.push(line.new(bar_index, e, bar_index + 20, e, color = color.gray))
+    planLines.push(line.new(bar_index, sl, bar_index + 20, sl, color = cBear, style = line.style_dashed))
+    planLines.push(line.new(bar_index, t1, bar_index + 20, t1, color = cBull, style = line.style_dashed))
+    planLines.push(line.new(bar_index, t2, bar_index + 20, t2, color = cBull))
+
+alertJson(string side, float e, float sl, float t1, float t2, int pass) =>
+    '{"source":"jev-pine","symbol":"' + syminfo.ticker + '","tf":"' + timeframe.period + '","side":"' + side + '","entry":' + fmt(e) + ',"sl":' + fmt(sl) + ',"tp1":' + fmt(t1) + ',"tp2":' + fmt(t2) + ',"score":' + str.tostring(score, "#.###") + ',"checks":' + str.tostring(pass) + '}'
+
+if longSig
+    lastDir := 1
+    lastSigBar := bar_index
+    kind = extL <= 0.35 ? "MKT" : "LIMIT"
+    label.new(bar_index, low, "BUY " + str.tostring(passL) + "/9\nScore " + str.tostring(score, "#.##") + "\nEntry " + fmt(eL) + " " + kind + "\nSL " + fmt(slL) + "\nTP1 " + fmt(t1L) + "\nTP2 " + fmt(t2L), yloc = yloc.belowbar, style = label.style_label_up, color = cBull, textcolor = color.white, size = size.small)
+    drawPlan(eL, slL, t1L, t2L)
+    alert(alertJson("LONG", eL, slL, t1L, t2L, passL), alert.freq_once_per_bar_close)
+if shortSig
+    lastDir := -1
+    lastSigBar := bar_index
+    kind = extS <= 0.35 ? "MKT" : "LIMIT"
+    label.new(bar_index, high, "SELL " + str.tostring(passS) + "/9\nScore " + str.tostring(score, "#.##") + "\nEntry " + fmt(eS) + " " + kind + "\nSL " + fmt(slS) + "\nTP1 " + fmt(t1S) + "\nTP2 " + fmt(t2S), yloc = yloc.abovebar, style = label.style_label_down, color = cBear, textcolor = color.white, size = size.small)
+    drawPlan(eS, slS, t1S, t2S)
+    alert(alertJson("SHORT", eS, slS, t1S, t2S, passS), alert.freq_once_per_bar_close)
+
+alertcondition(longSig, "Jev BUY", "Jev BUY on {{ticker}} {{interval}} @ {{close}}")
+alertcondition(shortSig, "Jev SELL", "Jev SELL on {{ticker}} {{interval}} @ {{close}}")
+
+plot(showEma ? ema20 : na, "EMA20", color.new(color.orange, 30))
+plot(showEma ? ema50 : na, "EMA50", color.new(color.aqua, 30))
+plot(showEma ? ema200 : na, "EMA200", color.new(color.purple, 20), 2)
+
+// ───────────────────────── Checklist table
+var table tbl = table.new(position.top_right, 3, 13, bgcolor = color.new(color.black, 20), border_width = 1, border_color = color.new(color.gray, 60))
+row(int r, string name, bool l, bool s) =>
+    table.cell(tbl, 0, r, name, text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, r, l ? "✔" : "✖", text_color = l ? cBull : color.gray, text_size = size.small)
+    table.cell(tbl, 2, r, s ? "✔" : "✖", text_color = s ? cBear : color.gray, text_size = size.small)
+
+if showTable and barstate.islast
+    table.cell(tbl, 0, 0, "Jev checklist", text_color = color.white, text_size = size.small)
+    table.cell(tbl, 1, 0, "BUY", text_color = cBull, text_size = size.small)
+    table.cell(tbl, 2, 0, "SELL", text_color = cBear, text_size = size.small)
+    row(1, "Score ≥ " + str.tostring(minScore) + " *", l1, s1)
+    row(2, "Higher TFs aligned", l2, s2)
+    row(3, "EMA stack + ADX≥18", l3, s3)
+    row(4, "Momentum (RSI/MACD)", l4, s4)
+    row(5, "Structure (BOS/CHoCH)", l5, s5)
+    row(6, "OB/FVG reaction *", l6, s6)
+    row(7, "Not extended (≤1 ATR)", l7, s7)
+    row(8, "Room ≥ " + str.tostring(minRR) + "R *", l8, s8)
+    row(9, "Fundamentals", l9, s9)
+    table.cell(tbl, 0, 10, "Passed (* = required)", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 10, str.tostring(passL) + "/9", text_color = longOK ? cBull : color.white, text_size = size.small)
+    table.cell(tbl, 2, 10, str.tostring(passS) + "/9", text_color = shortOK ? cBear : color.white, text_size = size.small)
+    table.cell(tbl, 0, 11, "Score / Fund (" + fundSrc + ")", text_color = color.white, text_size = size.small, text_halign = text.align_left)
+    table.cell(tbl, 1, 11, str.tostring(score, "#.##"), text_color = color.white, text_size = size.small)
+    table.cell(tbl, 2, 11, str.tostring(fund, "#.##"), text_color = color.white, text_size = size.small)
+    verdict = longOK ? "BUY READY" : shortOK ? "SELL READY" : choppy ? "NO TRADE — choppy" : "NO TRADE"
+    table.cell(tbl, 0, 12, verdict, text_color = longOK ? cBull : shortOK ? cBear : color.gray, text_size = size.small)
+if barstate.isfirst
+    table.merge_cells(tbl, 0, 12, 2, 12)

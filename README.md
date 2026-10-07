@@ -56,3 +56,11 @@ risk-based position size, margin, estimated liquidation, and a warning if liquid
 Drawn from closed candles by `functions/_lib/smc.js` using swing pivots (w=3): **BOS/CHoCH** (a close through the last swing; CHoCH = against the prior trend),
 **order blocks** (last opposite-colour candle at the origin of the breaking leg; shown until price closes through them), **liquidity sweeps** (wick through a swing, close back),
 and **EQH/EQL** pools (equal highs/lows not yet taken). They're added to the "Why" list and sent to Jev as context, but are *not* part of the rules score (no backtest yet).
+
+## TradingView: `pine/jev_smc_confluence.pine`
+Pine v6 port of the Jev rules engine for TradingView. Paste it into the Pine Editor, then **Add to chart**.
+- **Signals**: BUY/SELL prints on a closed bar only when the 9-item checklist passes. Three items are required: the Jev score is at or above the threshold, price reacted at a live OB/FVG, and there is room to the next S/R. In total ≥ 8/9 items must pass by default, and Jev's choppy veto applies. The label shows Jev's Entry/SL/TP1/TP2.
+- **Factors**: the same weights as `signal.js` (trend 27, HTF 25, momentum 20, structure 10, fundamentals 6). Funding, long/short and Fear & Greed aren't available in Pine, so that 12% goes to SMC structure bias instead.
+- **Fundamentals**: stocks use TradingView financials (EPS and revenue growth, ROE, D/E, FCF). Crypto uses TOTAL market-cap trend, USDT.D (risk-off) and, for alts, BTC.D. Everything else uses 30-day performance only.
+- **Drawn**: BOS/CHoCH, the latest N bull/bear order blocks, and the N *strongest* FVGs (gap × displacement × volume). A zone is deleted as soon as it is invalidated (closed through).
+- **Alerts**: "Jev BUY"/"Jev SELL" conditions. Use *Any alert() function call* to get a JSON payload (entry/sl/tp/score) for webhooks.
