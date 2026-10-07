@@ -3,7 +3,7 @@
 // plus a checklist gate. A BUY/SELL prints only when the confluence score, POI reaction and room-to-target
 // all pass AND enough checklist items agree. Confluence ≠ win probability. Not financial advice.
 //@version=6
-indicator("Jev SMC Confluence", overlay = true, max_boxes_count = 500, max_lines_count = 300, max_labels_count = 300, max_bars_back = 500)
+indicator("Jev SMC Confluence", overlay = true, scale = scale.right, max_boxes_count = 500, max_lines_count = 300, max_labels_count = 300, max_bars_back = 500)
 
 // ───────────────────────── Inputs
 grpS = "Signal checklist"
