@@ -12,8 +12,12 @@ minPass  = input.int(8, "Min checklist items passed (of 9)", minval = 5, maxval 
 minRR    = input.float(1.5, "Min room to next S/R (R multiples)", minval = 1.2, step = 0.1, group = grpS, tooltip = "Jev vetoes below 1.2R.")
 poiBars  = input.int(8, "POI reaction window (bars)", minval = 1, group = grpS, tooltip = "Price must have tapped a live OB/FVG within this many bars.")
 cooldown = input.int(10, "Bars before a repeat same-side signal", minval = 1, group = grpS)
-htfA     = input.timeframe("60", "Higher timeframe 1", group = grpS)
-htfB     = input.timeframe("240", "Higher timeframe 2", group = grpS)
+autoHtf  = input.bool(true, "Auto higher timeframes", group = grpS, tooltip = "≤5m→15m/1h · ≤15m→1h/4h · ≤1h→4h/D · ≤4h→D/W · D→W/M · W+→M/3M. Untick to use the two below.")
+htfAIn   = input.timeframe("60", "Higher timeframe 1 (manual)", group = grpS)
+htfBIn   = input.timeframe("240", "Higher timeframe 2 (manual)", group = grpS)
+tfSec = timeframe.in_seconds()
+htfA = not autoHtf ? htfAIn : tfSec <= 300 ? "15" : tfSec <= 900 ? "60" : tfSec <= 3600 ? "240" : tfSec <= 14400 ? "D" : tfSec <= 86400 ? "W" : "M"
+htfB = not autoHtf ? htfBIn : tfSec <= 300 ? "60" : tfSec <= 900 ? "240" : tfSec <= 3600 ? "D" : tfSec <= 14400 ? "W" : tfSec <= 86400 ? "M" : "3M"
 
 grpM = "Smart money"
 swingLen = input.int(5, "Swing length (BOS/CHoCH, S/R)", minval = 2, group = grpM, tooltip = "Jev dashboard uses 3; 5 is cleaner on TradingView.")
